@@ -205,12 +205,14 @@ sequenceDiagram
         C->>API: Audio chunk (voice) or text (chat)
         API->>GL: Forward to Gemini
         GL->>API: Transcription of customer message
-        GL->>API: [Tool call] retrieve_knowledge (if needed)
-        API->>PG: RAG search — find relevant knowledge chunks
+        opt Gemini needs knowledge
+            GL->>API: [Tool call] retrieve_knowledge
+            API->>PG: RAG search — find relevant knowledge chunks
+            API->>GL: Return tool result with context
+        end
         GL->>API: AI text response + audio response
-        API->>RD: Update conversation history
         API->>C: Audio + text response
-        API->>API: Classifier agent scores this turn
+        API->>API: Classifier agent scores this turn (async, non-blocking)
     end
 
     alt Customer requests escalation OR score drops below threshold
