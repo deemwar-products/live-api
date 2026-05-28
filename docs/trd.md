@@ -918,7 +918,7 @@ Storage behavior:
 
 **Note:** All three streams arrive on the same WebSocket connection but may arrive at slightly different times. Each is tagged with sequence metadata to allow accurate interleaving.
 
-## 5.4 Context Management
+## 5.5 Context Management
 
 ### Context Window
 
@@ -962,7 +962,7 @@ If WebSocket connection drops:
 - Conversation history replay limited to last 20 turns
 - Preserved entities always included
 
-## 5.5 Audio Interruption Handling
+## 5.6 Audio Interruption Handling
 
 When client sends `{"type": "interrupt"}`:
 
@@ -974,7 +974,7 @@ When client sends `{"type": "interrupt"}`:
 5. Backend waits for next customer input
 ```
 
-## 5.6 Voice States
+## 5.7 Voice States
 
 | State | Description | Client UI |
 |-------|-------------|-----------|
@@ -987,7 +987,7 @@ When client sends `{"type": "interrupt"}`:
 | **escalating** | Transferring to human | Connecting state + wait time |
 | **ended** | Session complete | Satisfaction prompt |
 
-## 5.7 WebSocket Keepalive
+## 5.8 WebSocket Keepalive
 
 ```
 Ping interval: 30 seconds
