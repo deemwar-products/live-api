@@ -1,6 +1,6 @@
 # Voice AI Customer Support Platform — Technical Requirements Document
 
-**Version:** 1.1
+**Version:** 1.2
 **Author:** Sreyash Reddy (IAmCyphr)
 **Last Updated:** 2026-05-28
 **Status:** Draft
@@ -95,6 +95,8 @@ The primary database. Stores everything permanent: users, organizations, session
 
 **Redis**
 Fast in-memory store for everything temporary and real-time: active session state, conversation history during a call, MCP tool cache, rate limit counters, refresh tokens, job queue.
+
+**Sync strategy:** Text transcripts are mirrored to Redis during a live session and persisted to PostgreSQL at session end. The RAG pipeline reads from Redis for current-turn context so vector search can include prior conversation turns even before they reach PostgreSQL.
 
 **S3-Compatible Storage**
 Stores binary files: uploaded documents, session audio (optional, async), analytics exports. We use S3 path prefixes per org to keep data isolated.
@@ -203,6 +205,7 @@ sequenceDiagram
         C->>API: Audio chunk (voice) or text (chat)
         API->>GL: Forward to Gemini
         GL->>API: Transcription of customer message
+        GL->>API: [Tool call] retrieve_knowledge (if needed)
         API->>PG: RAG search — find relevant knowledge chunks
         GL->>API: AI text response + audio response
         API->>RD: Update conversation history
@@ -280,7 +283,7 @@ This is all happening in real-time, bidirectionally. The customer speaks, hears 
 | Sample Rate | 16,000 Hz input; 24kHz from Gemini (resampled to 16kHz for storage) |
 | Channels | Mono |
 | Chunk Duration | ~32ms (512 samples) |
-| Max Chunk Size | 64KB (larger chunks rejected) |
+| Max Chunk Size | 2KB (larger chunks rejected) |
 
 ### 4.3 What Gemini Returns Per Turn
 
@@ -318,10 +321,10 @@ If the customer speaks while the AI is responding:
 
 ### 4.6 Context Window Management
 
-Gemini Live has a context window limit (~10–15 minutes of conversation). To handle long sessions:
+Gemini Live supports a very large context window (1M+ tokens). The practical constraint is not the window size — it is **token accumulation cost and latency** as the conversation grows. To manage this:
 
 - We keep the last 20 turns in memory
-- Older turns are compressed and summarized
+- Older turns are compressed and summarized into a concise history summary
 - Key entities (order IDs, account numbers, ticket numbers) are never discarded — they're preserved explicitly in session state
 - System prompt is always retained
 
@@ -380,22 +383,33 @@ Supported file types: PDF, DOCX, TXT, MD, HTML.
 
 ### 5.3 Retrieval Flow
 
-When a customer asks something, we search the knowledge base in parallel with the Gemini response:
+RAG context is injected into the Gemini Live session via **Tool Calling (Function Calling)** — not mid-stream prompt injection. On each customer turn:
+
+1. Customer message arrives → forwarded to Gemini Live session
+2. Gemini processes and, if it needs knowledge, triggers a `retrieve_knowledge` tool call
+3. Our server executes the vector search in pgvector (top 20 chunks, scored)
+4. Chunks above threshold (see 5.4) are returned to Gemini as a tool result
+5. Gemini uses the returned context to generate a grounded response
+6. If all chunks score < 0.50, we return a `knowledge_gap` flag and Gemini responds with a graceful fallback or escalation
 
 ```mermaid
 graph TD
-    A[Customer Message] --> B[Embed the query]
-    B --> C[Vector search in pgvector - top 20 results]
-    C --> D{Score check}
-    D -->|score > 0.75| E[High confidence - include]
-    D -->|0.50 to 0.75| F[Medium confidence - include with caveat]
-    D -->|score < 0.50| G[Low confidence - exclude]
-    E --> H[Take top 10 chunks]
-    F --> H
-    H --> I[Inject into Gemini prompt as context]
-    G --> J{Any good chunks?}
-    J -->|No| K[Flag as knowledge gap - consider escalation]
+    A[Customer Message] --> B[Forward to Gemini Live session]
+    B --> C{Gemini needs context?}
+    C -->|Yes| D[Trigger retrieve_knowledge tool call]
+    D --> E[Embed query → pgvector top-20]
+    E --> F{Score check}
+    F -->|score > 0.75| G[High confidence - return chunks]
+    F -->|0.50 to 0.75| H[Medium confidence - return with caveat]
+    F -->|score < 0.50| I[Low confidence - exclude chunk]
+    G --> J[Gemini generates grounded response]
+    H --> J
+    I --> K{Any chunks returned?}
+    K -->|No| L[Return knowledge_gap flag → escalation/fallback]
+    K -->|Yes| J
 ```
+
+**Note:** RAG cannot be injected mid-stream into an active audio stream. Tool Calling is the native mechanism — it happens before Gemini generates its response, adding typically 200–500ms to the turn latency (within the < 2s target).
 
 ### 5.4 Relevance Thresholds
 
@@ -1022,7 +1036,7 @@ graph LR
 
 Every turn during a live customer conversation, a lightweight **Classifier Agent** runs in parallel to the main Gemini Live session. It evaluates the conversation state and outputs a health score (0.0–1.0) that drives live dashboard visibility and human takeover decisions.
 
-**Model:** Gemini 2.5 Flash or Gemini 3 Flash, temperature 0
+**Model:** Gemini 2.0 Flash, temperature 0
 **Trigger:** Every conversation turn (customer message + AI response)
 **Output:** Score + per-signal breakdown + suggested action, stored in Redis during session
 
@@ -1263,7 +1277,7 @@ Regeneration is async (worker job). Active sessions use the current prompt until
 
 ## 19. Infrastructure & Deployment
 
-### 15.1 Containers
+### 19.1 Containers
 
 | Container | What It Runs |
 |-----------|-------------|
@@ -1274,7 +1288,7 @@ Both run the same binary. The `worker` container starts in worker mode via an en
 
 External services (PostgreSQL, Redis, S3) are not containerized by us in production — they run as managed services or dedicated instances.
 
-### 15.2 Deployment
+### 19.2 Deployment
 
 **Docker + Kamal** — self-hosted deployment. Kamal handles zero-downtime deploys, container management, and rollbacks.
 
@@ -1294,7 +1308,7 @@ For MVP, everything runs on a single server. For scale:
 
 ## 20. Non-Functional Requirements
 
-### 16.1 Performance
+### 20.1 Performance
 
 | Metric | Target |
 |--------|--------|
@@ -1304,14 +1318,14 @@ For MVP, everything runs on a single server. For scale:
 | Session resumption | < 5 seconds |
 | Concurrent sessions | 1,000 per Gemini project |
 
-### 16.2 Availability
+### 20.2 Availability
 
 | Level | Target |
 |-------|--------|
 | Platform uptime | 99.9% |
 | Max degraded time before escalation | < 1 hour |
 
-### 16.3 Security
+### 20.3 Security
 
 | Requirement | Implementation |
 |-------------|----------------|
@@ -1323,7 +1337,7 @@ For MVP, everything runs on a single server. For scale:
 | Audit logging | All admin actions logged |
 | JWT algorithm | RS256 |
 
-### 16.4 Scale Targets
+### 20.4 Scale Targets
 
 | Metric | MVP | Scale |
 |--------|-----|-------|
@@ -1343,6 +1357,7 @@ For MVP, everything runs on a single server. For scale:
 | OD-003 | Job queue implementation (Redis list vs dedicated table) | TBD |
 | OD-004 | Embedding model for pgvector (affects vector dimensions) | TBD |
 | OD-005 | LLM Judge model selection | TBD |
+| OD-006 | Strategy for real-time RAG injection into Gemini Live session (Tool Calling vs session mutation) | TBD |
 
 ---
 
