@@ -34,12 +34,12 @@ Sreyash Reddy (IAmCyphr)
 16. [Analytics & Logging](#16-analytics--logging)
 17. [Infrastructure & Deployment](#17-infrastructure--deployment)
 18. [Non-Functional Requirements](#18-non-functional-requirements)
+19. [Real-Time Conversation Scoring](#19-real-time-conversation-scoring)
+20. [System Prompt Generation](#20-system-prompt-generation)
 
 ---
 
 # 1. Overview
-
-## 1.1 Purpose
 
 This document specifies the technical requirements for the Voice AI Customer Support Platform. It translates product requirements (PRD) into implementable technical specifications.
 
@@ -597,7 +597,7 @@ CREATE TABLE conversations (
     session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role VARCHAR(20) NOT NULL CHECK (role IN ('customer', 'ai', 'agent')),
     content TEXT NOT NULL,
-    audio_url VARCHAR(500),
+    audio_url VARCHAR(500),  -- Nullable. Populated only if org has audio storage enabled.
     tool_calls JSONB,
     turn_index INTEGER NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -811,10 +811,30 @@ s3://bucket/
 │       ├── documents/
 │       │   └── {document_id}/
 │       │       └── original.{ext}
+│       ├── sessions/
+│       │   └── {session_id}/
+│       │       └── audio.pcm
 │       └── exports/
 │           └── {date}/
 │               └── analytics.parquet
 ```
+
+### Audio Storage Lifecycle
+
+**During a session:**
+- Audio chunks are written to local temp disk at `/tmp/sessions/{session_id}/audio.pcm`
+- Audio is never stored in Redis
+- Each chunk is appended to the file as raw PCM
+
+**Post-session (worker):**
+- Worker uploads audio file from temp disk to S3 asynchronously
+- Path: `orgs/{org_id}/sessions/{session_id}/audio.pcm`
+- On success: `conversations.audio_url` updated for all turns from that session
+- Temp file deleted after 24-hour grace period post-upload
+
+**Retention:**
+- Default: Auto-delete from S3 after 30 days
+- Configurable per org: Super Admin can set longer retention up to 1 year
 
 ---
 
@@ -880,6 +900,23 @@ s3://bucket/
 
 Target initialization time: < 2 seconds (with pre-warmed MCP cache)
 ```
+
+## 5.4 Gemini Live Output Capture
+
+Per turn, Gemini Live returns three outputs through the same WebSocket stream. All three are captured and stored.
+
+| Output | Type | Description |
+|--------|------|-------------|
+| **Customer Transcription** | `{"type": "transcription", "role": "customer", ...}` | STT result of customer speech |
+| **AI Text Response** | `{"type": "text", "data": "..."}` | AI's text reply |
+| **AI Audio Response** | `{"type": "audio", "data": "<base64>", ...}` | AI's spoken response (TTS) |
+
+Storage behavior:
+- **Transcription + AI text:** Stored in `conversations` table (per turn, one row per speaker)
+- **AI audio:** Written to temp disk `/tmp/sessions/{session_id}/audio.pcm`, uploaded to S3 post-session
+- **Customer audio:** Written to temp disk alongside AI audio (interleaved or separate), uploaded to S3 post-session
+
+**Note:** All three streams arrive on the same WebSocket connection but may arrive at slightly different times. Each is tagged with sequence metadata to allow accurate interleaving.
 
 ## 5.4 Context Management
 
@@ -1775,7 +1812,131 @@ Conversation Ends
 | **redis** | Session state, caching, rate limiting |
 | **postgres** | Primary database (with pgvector) |
 
-## 17.3 Infrastructure Requirements
+## 17.3 Worker Container
+
+The worker container handles all asynchronous background jobs. It is decoupled from the API server and runs as a separate process.
+
+### Purpose
+
+- Offload long-running tasks from the request path
+- Ensure reliable job completion independent of client connections
+- Enable horizontal scaling of background processing
+
+### Job Queue
+
+The job queue is backed by Redis. A dedicated Redis list acts as a FIFO queue:
+
+```
+Key: worker:jobs
+Type: List
+Operations: RPUSH (enqueue), BLPOP (dequeue)
+```
+
+Workers atomically claim jobs using `BLPOP` with timeout. Jobs include a type discriminator and payload:
+
+```json
+{
+  "id": "job_uuid",
+  "type": "audio_upload" | "document_processing" | "llm_judge" | "analytics_export" | "parquet_export" | "notification",
+  "payload": { ... },
+  "created_at": "ISO8601",
+  "retry_count": 0
+}
+```
+
+Failed jobs are re-enqueued with exponential backoff (max 3 retries).
+
+### Worker Jobs
+
+| Job Type | Trigger | Description |
+|----------|---------|-------------|
+| **audio_upload** | Session ends | Uploads session audio from temp disk to S3 |
+| **document_processing** | Document uploaded | Validates, chunks, embeds, indexes into pgvector |
+| **llm_judge** | Session ends | Runs post-session quality analysis |
+| **analytics_export** | Scheduled (daily) | Generates Parquet exports for analytics |
+| **parquet_export** | On demand | Exports requested report to S3 |
+| **notification** | Various triggers | Sends async notifications (email, webhook) |
+
+### Audio Upload Flow
+
+```
+Session Ends
+    |
+    v
+API server enqueues: audio_upload job
+    |
+    v
+Worker picks up job
+    |
+    v
+Worker reads audio from temp disk: /tmp/sessions/{session_id}/audio.pcm
+    |
+    v
+Worker uploads to S3: orgs/{org_id}/sessions/{session_id}/audio.pcm
+    |
+    v
+On success: Update conversations.audio_url for all turns from this session
+On failure: Re-enqueue with retry (max 3 attempts)
+    |
+    v
+Temp file deleted after successful upload + 24h grace period
+```
+
+### LLM Judge Execution
+
+The LLM Judge runs asynchronously after session ends:
+
+```
+Session Ends
+    |
+    v
+API server enqueues: llm_judge job with session_id
+    |
+    v
+Worker fetches full conversation transcript from PostgreSQL
+    |
+    v
+Worker invokes LLM Judge (Gemini 2.5 Flash or Gemini 3 Flash, temperature 0)
+    |
+    v
+Judge outputs:
+  - Quality score (0.0-1.0)
+  - Per-signal breakdown (confidence, sentiment, progress, kg_risk)
+  - Knowledge gaps identified
+  - Actionable feedback for org
+    |
+    v
+Worker stores results in PostgreSQL (conversation_scores table)
+    |
+    v
+Knowledge gaps queued as notification to org admin
+```
+
+**Output Storage Schema (conversation_scores table):**
+
+```sql
+CREATE TABLE conversation_scores (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    overall_score DECIMAL(3,2) NOT NULL CHECK (overall_score BETWEEN 0 AND 1),
+    confidence_score DECIMAL(3,2) NOT NULL,
+    sentiment_score DECIMAL(3,2) NOT NULL,
+    progress_score DECIMAL(3,2) NOT NULL,
+    kg_risk_score DECIMAL(3,2) NOT NULL,
+    signal_breakdown JSONB DEFAULT '{}',
+    suggested_action VARCHAR(50),
+    knowledge_gaps JSONB DEFAULT '[]',
+    agent_feedback TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_scores_session ON conversation_scores(session_id);
+CREATE INDEX idx_scores_overall ON conversation_scores(overall_score);
+```
+
+---
+
+## 17.4 Infrastructure Requirements
 
 | Component | Requirement |
 |-----------|-------------|
@@ -1853,5 +2014,369 @@ Conversation Ends
 
 ---
 
-*Document Status: Draft — Pending Final Approval*
+| **OD-001** | Vector DB Provider | Locked: pgvector |
+| **OD-002** | Deployment | Locked: Docker + Kamal |
+| **OD-003** | S3 Provider | TBD |
+
+---
+
+*Document Status: Draft -- Pending Final Approval*
 *Next Steps: Review with team, validate against PRD, confirm decisions*
+
+---
+
+# 19. Real-Time Conversation Scoring
+
+## 19.1 Overview
+
+Every turn during a live customer conversation, a lightweight **Classifier Agent** runs in parallel to the main Gemini Live session. It evaluates the conversation state and outputs a health score. This score drives live dashboard visibility and human takeover decisions.
+
+**Model:** Gemini 2.5 Flash or Gemini 3 Flash at temperature 0
+**Trigger:** Every conversation turn (customer message + AI response)
+**Output:** Score 0.0-1.0 + per-signal breakdown + suggested action
+
+---
+
+## 19.2 Signal Taxonomy
+
+### Confidence & Grounding (Weight: 40%)
+
+Measures whether the AI is drawing from actual knowledge or hallucinating.
+
+| Condition | Score |
+|-----------|-------|
+| RAG retrieval, chunk score > 0.75 | 1.0 |
+| RAG retrieval, chunk score 0.50-0.75 | 0.7 |
+| RAG retrieval, chunk score < 0.50 | 0.3 |
+| No RAG context available | 0.2 |
+| AI explicitly says "I don't know" / "I can't help" | 0.4 |
+| MCP tool call succeeds | +0.15 bonus |
+| MCP tool call fails | -0.20 penalty |
+
+**Calculation:** Average across the last 5 turns. Cap at 1.0.
+
+### Customer Sentiment & Frustration (Weight: 35%)
+
+Measures whether the customer is satisfied or escalating.
+
+| Condition | Score |
+|-----------|-------|
+| Explicit escalation request ("talk to a human," "frustrated") | 0.0 |
+| High frustration markers ("doesn't work," "repeating," "why") | 0.1-0.3 |
+| Mild skepticism ("okay but," "I'm not sure," "hmm") | 0.5 |
+| Neutral / cooperative ("okay," "got it") | 0.7 |
+| Satisfied / positive ("thanks," "perfect," "that helps") | 0.95 |
+
+**Calculation:** Score the last customer message + the one before it. Average them.
+**Override:** If explicit escalation request detected, sentiment score = 0.0 immediately, regardless of average.
+
+### Progress Toward Resolution (Weight: 15%)
+
+Measures whether the conversation is making headway.
+
+| Turn Count | Base Score |
+|------------|------------|
+| Turn 1-3 | 1.0 |
+| Turn 4-5 | 0.8 |
+| Turn 6-8 | 0.6 |
+| Turn 9-12 | 0.4 |
+| Turn 13+ | 0.2 |
+
+**Penalties:**
+
+| Condition | Adjustment |
+|-----------|------------|
+| Customer asks the same question twice | -0.30 |
+| AI contradicts itself | -0.20 |
+| Customer says "I already told you" | -0.40 |
+
+**Bonuses:**
+
+| Condition | Adjustment |
+|-----------|------------|
+| Customer asks a follow-up building on prior answer | +0.10 |
+| MCP tool call returns actionable result | +0.20 |
+
+### Knowledge Gap Risk (Weight: 10%)
+
+Measures likelihood the LLM Judge will flag this conversation post-session.
+
+| Condition | Score |
+|-----------|-------|
+| All RAG chunks scored < 0.50 | 0.1 |
+| MCP tool called but returned error | 0.2 |
+| AI responds despite low confidence | 0.3 |
+| RAG context found and used | 0.9 |
+| Question matches known FAQ / common issue | 0.95 |
+
+**Calculation:** Average of last 3 retrieved chunk relevance scores, capped at 1.0.
+
+---
+
+## 19.3 Overall Score Calculation
+
+```
+score = (0.40 x confidence) + (0.35 x sentiment) + (0.15 x progress) + (0.10 x kg_risk)
+```
+
+Result range: **0.0 - 1.0**
+
+---
+
+## 19.4 Threshold Tiers
+
+Default thresholds (org-configurable):
+
+| Range | Status | Action |
+|-------|--------|--------|
+| 0.70 - 1.00 | Green | Normal. Continue. |
+| 0.50 - 0.69 | Yellow | Monitor. Flag on dashboard. Optional admin alert. |
+| 0.30 - 0.49 | Orange | At risk. Dashboard notification. Suggest takeover. |
+| 0.00 - 0.29 | Red | Critical. Auto-notify admin. Immediate takeover recommended. |
+
+**Org-configurable overrides:**
+- Red threshold: 0.2 (permissive) to 0.5 (aggressive)
+- Auto-escalate on Red: toggle on/off per org
+- Yellow/Orange thresholds: adjustable within platform bounds
+
+---
+
+## 19.5 Worked Example
+
+**Context:** Turn 7, customer says "this still isn't working."
+
+| Signal | Value | Weighted |
+|--------|-------|---------|
+| Confidence (RAG hit 0.8, no MCP) | 0.80 | 0.40 x 0.80 = 0.32 |
+| Sentiment ("still isn't working") | 0.20 | 0.35 x 0.20 = 0.07 |
+| Progress (Turn 7, no resolution) | 0.50 | 0.15 x 0.50 = 0.075 |
+| KG Risk (chunks scored 0.6-0.7) | 0.65 | 0.10 x 0.65 = 0.065 |
+| **Total** | | **0.53 -> Yellow** |
+
+Dashboard flags the conversation. Admin can monitor or initiate takeover.
+
+---
+
+## 19.6 Human Takeover Flow
+
+When a conversation is flagged (Orange or Red), or admin manually decides to intervene:
+
+```
+1. Admin sees flagged conversation on dashboard
+   - Current score + which signal tanked
+   - Last 3 turns preview
+   - Suggested reason ("Customer frustrated," "AI out of knowledge," etc.)
+
+2. Admin clicks "Take Over"
+
+3. System:
+   a. Pauses Gemini Live session gracefully
+   b. Persists full conversation to PostgreSQL immediately
+   c. Bundles classifier signals + context for the agent
+
+4. Customer hears:
+   "Thanks for your patience. A support specialist has reviewed our
+    conversation and would like to help. One moment please..."
+
+5. Human agent receives:
+   - Full conversation transcript (read-only)
+   - Per-signal score breakdown
+   - Classifier's flagged reason
+   - Session duration + turn count
+   - Any knowledge gaps or failed tool calls
+
+6. Agent resolves issue
+   - Resolved -> session marked resolved_human
+   - Further escalation needed -> marked escalated
+```
+
+---
+
+## 19.7 Dashboard Real-Time View
+
+Live conversations panel shows per-conversation:
+
+| Field | Description |
+|-------|-------------|
+| Session ID | Unique identifier |
+| Customer | Identifier if provided by org |
+| Mode | Voice / Chat |
+| Turn Count | Current turn number |
+| Current Score | 0.0-1.0 with color indicator |
+| Score Trend | Arrow: improving / stable / declining |
+| Top Signal | Which signal is lowest right now |
+| Status | Active / Flagged / Takeover Pending |
+
+Admins can click any row to see the full live transcript + per-signal breakdown in real time.
+
+---
+
+## 19.8 Scoring Flow During Session
+
+```
+Customer Message
+      |
+      v
+Gemini Live processes turn
+      |
+      v
+Classifier Agent runs (parallel, async)
+      |
+      v
+Score computed: 0.0 - 1.0
+      |
+      v
+Score + breakdown stored in Redis (per session)
+      |
+      v
+Dashboard polls / receives push update
+      |
+      v
+If score < threshold:
+   - Flag conversation
+   - Notify admin (if auto-notify enabled)
+   - Log suggested action
+```
+
+Scores are stored in Redis during the session for real-time access:
+
+```
+Key: session:{session_id}:score
+Type: Hash
+TTL: 30 minutes
+Fields:
+  - overall_score: decimal (0.0-1.0)
+  - confidence: decimal
+  - sentiment: decimal
+  - progress: decimal
+  - kg_risk: decimal
+  - tier: green|yellow|orange|red
+  - suggested_action: string
+  - updated_at: timestamp
+```
+
+Post-session, final score is persisted to `conversation_scores` table by the worker.
+
+---
+
+# 20. System Prompt Generation
+
+## 20.1 Overview
+
+The system prompt is the base instruction injected into every Gemini Live session. It defines how the AI behaves, what tone it uses, and what constraints it follows.
+
+System prompt generation has three modes, configurable per org:
+
+| Mode | Description |
+|------|-------------|
+| **Auto-generate** | AI analyzes org's uploaded documents and generates a tailored prompt |
+| **Auto+Edit** | AI generates a prompt; admin can review and customize before activation |
+| **Custom** | Admin writes the system prompt from scratch |
+
+---
+
+## 20.2 System Prompt Generation Model
+
+The system prompt is generated using **Gemini 2.5 Flash** (temperature 0.2 for slight creativity, deterministic output).
+
+Inputs to the generator:
+- All active documents from the org's knowledge base (text content only)
+- Org name and industry (from org settings)
+- Conversation context examples (if available)
+- Custom instructions provided by admin (if mode is Auto+Edit or Custom)
+
+Output: A structured system prompt stored in the org's configuration.
+
+---
+
+## 20.3 System Prompt Storage
+
+The generated system prompt is stored in the `organizations.settings` JSONB field or in a dedicated table:
+
+```sql
+CREATE TABLE system_prompts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    mode VARCHAR(20) NOT NULL CHECK (mode IN ('auto', 'auto_edit', 'custom')),
+    content TEXT NOT NULL,
+    generator_version VARCHAR(20),
+    is_active BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_prompts_org ON system_prompts(org_id);
+CREATE INDEX idx_prompts_active ON system_prompts(org_id, is_active);
+```
+
+The active prompt is rebuilt on every session initialization from this storage.
+
+---
+
+## 20.4 System Prompt Modes
+
+### Auto-generate
+
+1. Admin enables auto-generate mode
+2. System reads all active documents for the org
+3. System invokes Gemini Flash to generate prompt
+4. Prompt is activated immediately
+5. Auto-regeneration triggered on: document upload, document update, admin request
+
+### Auto+Edit
+
+1. System generates prompt (same as auto-generate)
+2. Admin reviews generated prompt in dashboard
+3. Admin can edit custom instructions, tone, or constraints
+4. Admin activates the prompt
+5. Auto-regeneration updates the draft; admin must re-approve after edits
+
+### Custom
+
+1. Admin writes prompt from scratch in dashboard editor
+2. System validates prompt (checks for unsafe content, required sections)
+3. Admin activates custom prompt
+4. No auto-regeneration unless admin requests it
+
+---
+
+## 20.5 System Prompt Structure
+
+Generated and custom prompts follow this structure:
+
+```
+[Base Instruction]
+You are a professional support agent for [Org Name].
+
+[Behavior Rules]
+- Be polite, concise, and helpful
+- Use the customer's language
+- Never make up information not in the knowledge base
+- Escalate when unsure
+
+[Tone & Style]
+- Professional but friendly
+- Short responses (voice support)
+- Long-form responses (chat support)
+
+[Context]
+- Knowledge base: [dynamically injected from RAG]
+- Available tools: [dynamically injected from MCP]
+
+[Escalation]
+- Escalate when: [org-configurable triggers]
+```
+
+---
+
+## 20.6 System Prompt Regeneration Triggers
+
+| Trigger | Action |
+|---------|--------|
+| New document uploaded | Mark prompt draft for regeneration |
+| Document updated | Mark prompt draft for regeneration |
+| Document deleted | Mark prompt draft for regeneration |
+| Admin requests | Regenerate immediately |
+| Weekly schedule | Auto-regenerate if docs changed |
+
+Regeneration is asynchronous (worker job). Active sessions use the current prompt until session ends.
