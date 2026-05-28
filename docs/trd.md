@@ -1,6 +1,6 @@
 # Voice AI Customer Support Platform — Technical Requirements Document
 
-**Version:** 1.2
+**Version:** 1.3
 **Author:** Sreyash Reddy (IAmCyphr)
 **Last Updated:** 2026-05-28
 **Status:** Draft
@@ -245,13 +245,12 @@ Before the customer says a single word, we do setup work in under 2 seconds:
 On every customer message:
 
 1. Audio/text arrives from the customer's browser
-2. We forward it to Gemini Live
-3. Gemini returns: customer transcription + AI response text + AI audio
-4. We search the knowledge base (RAG) for relevant context — this runs in parallel, not sequentially
-5. Gemini generates a response using that context
+2. We forward it to the Gemini Live session
+3. If Gemini needs knowledge, it triggers a `retrieve_knowledge` tool call (sequential — see Section 5.3 for the full flow)
+4. We run the classifier agent to score this turn's quality (parallel, non-blocking)
+5. Gemini returns: customer transcription + AI response text + AI audio
 6. We send audio + text back to the customer
-7. We update conversation history in Redis
-8. We run the classifier agent to score this turn's quality
+7. We update conversation history in Redis (mirrored to PostgreSQL at session end — see Section 2.2)
 
 ### 3.4 What Happens at Session End
 
@@ -323,10 +322,11 @@ If the customer speaks while the AI is responding:
 
 Gemini Live supports a very large context window (1M+ tokens). The practical constraint is not the window size — it is **token accumulation cost and latency** as the conversation grows. To manage this:
 
-- We keep the last 20 turns in memory
-- Older turns are compressed and summarized into a concise history summary
-- Key entities (order IDs, account numbers, ticket numbers) are never discarded — they're preserved explicitly in session state
+- We track a **rolling token count** in Redis per session (using a lightweight tokenizer). Compression is triggered once the sliding window exceeds a configured threshold (default: 50,000 tokens — adjustable per org)
+- When the threshold is hit, older turns are compressed and summarized into a concise history summary
+- Key entities (order IDs, account numbers, ticket numbers) are preserved explicitly in session state — never discarded
 - System prompt is always retained
+- Token count is stored in Redis as: `session:{session_id}:token_count` — updated on every turn, reset on compression
 
 ### 4.7 WebSocket Keepalive
 
@@ -538,14 +538,16 @@ When escalation triggers:
 
 ### 7.5 Audio Storage
 
-Audio is **not** stored during the conversation — that would add latency. Instead:
+Audio is **not** streamed to storage during the conversation — that would add latency. Instead:
 
-- Audio chunks are written to local temp disk: `/tmp/sessions/{session_id}/audio.pcm`
-- After session ends, worker uploads to S3 asynchronously: `orgs/{org_id}/sessions/{session_id}/audio.pcm`
-- Auto-deleted after 30 days (configurable per org)
+- Audio chunks are buffered in a **non-blocking async goroutine** within the `api` container (a worker pool, not the WebSocket handling goroutine) and written to local temp disk: `/tmp/sessions/{session_id}/audio.pcm`
+- File descriptor is held open and chunks are appended sequentially per session; the goroutine does not block the main WebSocket event loop
+- After session ends, the `audio_upload` worker job reads the temp file and uploads to S3: `orgs/{org_id}/sessions/{session_id}/audio.pcm`
+- Temp file is deleted after successful upload
+- Auto-deleted from S3 after 30 days (configurable per org)
 - Audio storage is optional — orgs can disable it entirely
 
-Redis only stores audio **metadata** (file size, path), never the actual audio bytes.
+Redis only stores audio **metadata** (file size, path, duration), never the actual audio bytes.
 
 ---
 
@@ -856,6 +858,8 @@ When the server must send an error over the WebSocket connection, it uses this s
 ### 14.1 API Key Pool Architecture
 
 The platform manages a pool of Gemini API keys shared across all organizations. This avoids per-org quota limits and allows centralized rate management.
+
+**Security:** All platform API keys stored in `settings.api_key_pools` are encrypted at rest using **AES-256-GCM**. The encryption key is injected at runtime via environment variable (`API_KEYS_ENCRYPTION_KEY`) — never stored in the database. If the database is compromised without the key, the keys remain unreadable.
 
 ```
 +--------------------------------------------------------------------------+
@@ -1201,7 +1205,7 @@ Three modes, configurable per org:
 
 ### 18.2 Generation Model
 
-**Gemini 2.5 Flash** at temperature 0.2 (slight creativity, deterministic output).
+**Gemini 2.0 Flash** at temperature 0.2 (slight creativity, deterministic output).
 
 **Inputs to the generator:**
 - All active documents from the org's knowledge base (text content only)
@@ -1357,7 +1361,7 @@ For MVP, everything runs on a single server. For scale:
 | OD-003 | Job queue implementation (Redis list vs dedicated table) | TBD |
 | OD-004 | Embedding model for pgvector (affects vector dimensions) | TBD |
 | OD-005 | LLM Judge model selection | TBD |
-| OD-006 | Strategy for real-time RAG injection into Gemini Live session (Tool Calling vs session mutation) | TBD |
+| OD-006 | Strategy for real-time RAG injection into Gemini Live session (Tool Calling vs session mutation) | **Locked: Tool Calling** — Gemini triggers `retrieve_knowledge` tool; server executes pgvector search and returns context before generating response. See Section 5.3. |
 
 ---
 
