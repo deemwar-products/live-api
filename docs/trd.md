@@ -1,1592 +1,847 @@
-# Voice AI Customer Support Platform — Technical Requirements Document (TRD)
+# Voice AI Customer Support Platform — Technical Requirements Document
 
-## Status
-Draft — Pending Final Approval
-
-## Version
-1.1
-
-## Author
-Sreyash Reddy (IAmCyphr)
-
-## Last Updated
-2026-05-28
+**Version:** 1.1
+**Author:** Sreyash Reddy (IAmCyphr)
+**Last Updated:** 2026-05-28
+**Status:** Draft
 
 ---
 
-# Table of Contents
+## Table of Contents
 
-1. [Overview](#1-overview)
+1. [What We're Building](#1-what-were-building)
 2. [System Architecture](#2-system-architecture)
-3. [API Design](#3-api-design)
-4. [Data Models](#4-data-models)
-5. [Voice Pipeline](#5-voice-pipeline)
-6. [RAG Pipeline](#6-rag-pipeline)
-7. [MCP Integration](#7-mcp-integration)
-8. [Session Management](#8-session-management)
-9. [Multi-Tenant Isolation](#9-multi-tenant-isolation)
-10. [Authentication & Authorization](#10-authentication--authorization)
-11. [Role Management](#11-role-management)
-12. [Permission Matrix](#12-permission-matrix)
-13. [Error Handling & Resilience](#13-error-handling--resilience)
+3. [End-to-End Conversation Flow](#3-end-to-end-conversation-flow)
+4. [Voice & Chat Pipeline](#4-voice--chat-pipeline)
+5. [RAG Pipeline](#5-rag-pipeline)
+6. [MCP Integration](#6-mcp-integration)
+7. [Session Management](#7-session-management)
+8. [Authentication & Roles](#8-authentication--roles)
+9. [Data Design](#9-data-design)
+10. [Worker Jobs](#10-worker-jobs)
+11. [Multi-Tenant Isolation](#11-multi-tenant-isolation)
+12. [Error Handling & Resilience](#12-error-handling--resilience)
+13. [WebSocket Error Schema](#13-websocket-error-schema)
 14. [Credit & Billing Management](#14-credit--billing-management)
-15. [Notification System](#15-notification-system)
+15. [Notifications](#15-notifications)
 16. [Analytics & Logging](#16-analytics--logging)
-17. [Infrastructure & Deployment](#17-infrastructure--deployment)
-18. [Non-Functional Requirements](#18-non-functional-requirements)
-19. [Real-Time Conversation Scoring](#19-real-time-conversation-scoring)
-20. [System Prompt Generation](#20-system-prompt-generation)
+17. [Real-Time Conversation Scoring](#17-real-time-conversation-scoring)
+18. [System Prompt Generation](#18-system-prompt-generation)
+19. [Infrastructure & Deployment](#19-infrastructure--deployment)
+20. [Non-Functional Requirements](#20-non-functional-requirements)
+21. [Open Decisions](#21-open-decisions)
 
 ---
 
-# 1. Overview
+## 1. What We're Building
 
-This document specifies the technical requirements for the Voice AI Customer Support Platform. It translates product requirements (PRD) into implementable technical specifications.
+A platform that lets businesses offer AI-powered voice and chat support to their customers. Businesses upload their knowledge base, configure the AI, and their customers get instant support — no human needed most of the time.
 
-## 1.2 Scope
+The platform handles everything: real-time voice conversations, knowledge retrieval, tool integrations, escalation to human agents, and feedback loops to keep improving the AI over time.
 
-| In Scope | Out of Scope |
-|----------|--------------|
-| Real-time voice AI customer support (Web App) | Mobile App (v0.2+) |
-| Text chat support (Web App) | URL scraping (v0.2+) |
-| Multi-tenant architecture | Business-provided MCP (v0.2+) |
-| RAG-based knowledge retrieval | SSO integration |
-| MCP tool integration | Custom domains |
-| Human escalation flow | Pre-built connectors |
-| Analytics dashboard | |
-| Role-based access control | |
-| Platform MCP servers (shared) | |
+**Core loop:**
 
-## 1.3 Reference Documents
+1. Business uploads docs, FAQs, connects their tools
+2. Customer starts a voice or chat session on the business's subdomain
+3. AI responds using the business's knowledge base and tools
+4. If the AI can't help, it escalates to a human agent
+5. After every conversation, an LLM Judge reviews quality and surfaces knowledge gaps back to the business
 
-- PRD: `docs/prd.md`
-- UX Design: `docs/ux-design-specification.md`
+**Target:** 80–90% of conversations resolved by AI without human intervention.
 
-## 1.4 Definitions
+**In scope for MVP:**
 
-| Term | Definition |
-|------|------------|
-| **Org** | Organization — the business customer using the platform |
-| **Agent** | Human support agent who takes escalated calls |
-| **Customer** | End user contacting support via voice or chat |
-| **Session** | Single conversation (voice or chat) between customer and AI |
-| **Turn** | One exchange: customer speaks, AI responds |
-| **Platform MCP** | MCP servers provided by the platform, shared across all orgs |
-| **Org MCP** | MCP servers configured by each organization for their specific tools |
+- Voice and chat support via web app and embeddable widget
+- Multi-tenant architecture (each business is isolated)
+- RAG-based knowledge retrieval
+- MCP tool integration (platform-provided tools)
+- Human escalation (live and async)
+- LLM Judge feedback loop
+- Analytics dashboard
+- Role-based access control
 
-## 1.5 Acronyms
-
-| Acronym | Definition |
-|---------|------------|
-| API | Application Programming Interface |
-| JWT | JSON Web Token |
-| MCP | Model Context Protocol |
-| NFR | Non-Functional Requirement |
-| OCR | Optical Character Recognition |
-| RAG | Retrieval-Augmented Generation |
-| REST | Representational State Transfer |
-| SLA | Service Level Agreement |
-| TBD | To Be Determined |
-| TLS | Transport Layer Security |
-| TPM | Tokens Per Minute |
-| UUID | Universally Unique Identifier |
-| WebSocket | Bidirectional communication protocol |
+**Out of scope (v0.2+):** Mobile app, URL scraping, business-provided MCP servers, SSO, custom domains.
 
 ---
 
-# 2. System Architecture
+## 2. System Architecture
 
-## 2.1 High-Level System Topology
+The entire platform runs as a **Go monolith** — one application, cleanly organized internally. It deploys as two containers plus three external services.
 
-```
-+------------------------------------------------------------------------------+
-|                              CLIENT LAYER                                    |
-|                                                                              |
-|   +----------------+  +------------------+  +---------------------------+   |
-|   |   Web App      |  |   Embed         |  |   Admin                  |   |
-|   |   (Voice +     |  |   Widget        |  |   Dashboard              |   |
-|   |    Chat)       |  |   (External)    |  |   (Org + Super)          |   |
-|   +----------------+  +------------------+  +---------------------------+   |
-|                                                                              |
-|   Mobile App (Future — v0.2+)                                                |
-+------------------------------------------------------------------------------+
-           |                        |                         |
-           +------------------------+-------------------------+
-                                    |
-                                    v
-+------------------------------------------------------------------------------+
-|                              API GATEWAY                                      |
-|                                                                              |
-|   +----------------------------------------------------------------------+  |
-|   |  Rate Limiting  |  Auth (JWT)  |  Tenant Context  |  Logging       |  |
-|   +----------------------------------------------------------------------+  |
-+------------------------------------------------------------------------------+
-                                    |
-                                    v
-+------------------------------------------------------------------------------+
-|                             CORE SERVICES                                     |
-|                                                                              |
-|   +----------------+  +----------------+  +----------------+  +-------------+  |
-|   |  Voice/Chat   |  |  RAG          |  |  MCP          |  |  Analytics  |  |
-|   |  Service      |  |  Service      |  |  Service      |  |  Service    |  |
-|   |               |  |               |  |               |  |             |  |
-|   |  WebSocket    |  |  Retrieve     |  |  Tool Exec    |  |  Aggregate  |  |
-|   |  Gemini Proxy |  |  Embed       |  |  Timeout      |  |  Dashboard  |  |
-|   |  Audio Proc   |  |  Chunk       |  |  Retry       |  |  Export     |  |
-|   +--------+-------+  +--------+------+  +--------+------+  +------+------+  |
-|            |                      |                    |                    |       |
-|            +----------------------+--------------------+--------------------+       |
-|                                     |                                        |
-+-------------------------------------+----------------------------------------+
-                                      v
-+------------------------------------------------------------------------------+
-|                               DATA LAYER                                     |
-|                                                                              |
-|   +----------------+  +----------------+  +----------------+  +-------------+  |
-|   |  PostgreSQL    |  |  Redis        |  |  pgvector     |  |  S3         |  |
-|   |  (pgvector)   |  |               |  |  (Extension)  |  |  Compatible |  |
-|   |               |  |               |  |               |  |             |  |
-|   |  Users/Orgs   |  |  Sessions     |  |  Embeddings   |  |  Documents  |  |
-|   |  Roles/Perms  |  |  Cache       |  |  (per org)   |  |  Parquet    |  |
-|   |  Transcripts  |  |  Rate Limit   |  |               |  |  Media      |  |
-|   +----------------+  +----------------+  +----------------+  +-------------+  |
-|                                                                              |
-|   +----------------------------------------------------------------------+  |
-|   |                    API KEY POOL MANAGER                               |  |
-|   |                                                                      |  |
-|   |   +----------+  +----------+  +----------+  +----------+            |  |
-|   |   |  Key A   |  |  Key B   |  |  Key C   |  |  Key D   |            |  |
-|   |   |  (Pool)  |  |  (Pool)  |  |  (Pool)  |  |  Backup  |            |  |
-|   |   +----------+  +----------+  +----------+  +----------+            |  |
-|   |                                                                      |  |
-|   |   Dynamic Round-Robin  |  Monitor: RPM | TPM | Sessions  | Alert     |  |
-|   +----------------------------------------------------------------------+  |
-+------------------------------------------------------------------------------+
-                                      |
-                                      v
-                    +-----------------------------------------+
-                    |           Gemini Live API                |
-                    |   WebSocket  |  STT  |  LLM  |  TTS   |
-                    +-----------------------------------------+
-```
+### 2.1 The Two Containers
 
-## 2.2 Component Responsibilities
+**`api` container**
+The main application. Handles everything that needs to happen in real-time:
+- Incoming HTTP requests (REST API)
+- WebSocket connections for live voice/chat sessions
+- Auth validation, rate limiting, tenant isolation
+- Proxying audio and messages to/from Gemini Live API
+- Triggering background jobs when needed
 
-| Component | Responsibility |
-|-----------|----------------|
-| **Web App** | Browser-based voice/chat interface, audio capture/playback |
-| **Embed Widget** | JavaScript widget for external websites |
-| **Admin Dashboard** | Org management, documents, analytics, settings |
-| **API Gateway** | Auth validation, tenant isolation, rate limiting, logging |
-| **Voice/Chat Service** | WebSocket handling, Gemini proxy, audio processing |
-| **RAG Service** | Document chunking, embedding, retrieval |
-| **MCP Service** | Tool definitions, execution, timeout/retry, caching |
-| **Analytics Service** | Data aggregation, dashboard queries |
-| **API Key Pool Manager** | Key rotation, monitoring, failover |
-| **PostgreSQL** | Primary data store (users, orgs, transcripts, embeddings) |
-| **Redis** | Session state, caching, rate limiting |
-| **pgvector** | Embedding storage and retrieval (PostgreSQL extension) |
-| **S3 Compatible** | Document storage, Parquet exports (Phase 2) |
+**`worker` container**
+Runs the same Go binary but in worker mode. Handles everything that can happen in the background:
+- Processing uploaded documents (chunking, embedding, indexing)
+- Uploading session audio to S3
+- Running the LLM Judge on completed conversations
+- Sending notifications
+- Exporting analytics to Parquet
 
-**Note:** Mobile App is planned for v0.2+ — not in MVP scope.
+The two containers share the same codebase. The `api` drops jobs into a queue; the `worker` picks them up and processes them.
 
-## 2.3 Data Flow: Voice Call
+### 2.2 External Services
 
-```
-+--------+    +----------+    +----------------+    +--------------+
-| Browser |-->| WebSocket |-->| Voice Service  |-->| Gemini Live  |
-|  (Mic) |    | Connect  |    |                |    |    API       |
-+--------+    +----+-----+    +--------+-------+    +--------------+
-                 |                    |                    |
-                 |  1. Auth          |  2. RAG Retrieve  |  3. Tool Call
-                 |  2. org_id       |  3. MCP Config    | 4. Response
-                 v                    v                    v
-           +---------+          +---------+          +--------+
-           |  Redis  |          | Vector DB |          |   MCP    |
-           | Session  |          |   (RAG)   |          | Service  |
-           +---------+          +---------+          +--------+
-                                       |
-                                       v
-                               +--------------+
-                               |   Response   |
-                               |   (Audio +   |
-                               |    Text)     |
-                               +------+-------+
-                                      |
-+--------+    +----------+    +---------+-----+
-| Browser |<--| WebSocket |<--| Voice Service |  (Bidirectional streaming)
-|(Speaker|<--| Response  |<--|              |
-+--------+    +----------+    +--------------+
+**PostgreSQL (with pgvector extension)**
+The primary database. Stores everything permanent: users, organizations, sessions, transcripts, document metadata, embeddings. pgvector handles semantic search directly inside PostgreSQL — no separate vector database needed.
+
+**Redis**
+Fast in-memory store for everything temporary and real-time: active session state, conversation history during a call, MCP tool cache, rate limit counters, refresh tokens, job queue.
+
+**S3-Compatible Storage**
+Stores binary files: uploaded documents, session audio (optional, async), analytics exports. We use S3 path prefixes per org to keep data isolated.
+
+### 2.3 High-Level Architecture
+
+```mermaid
+graph TD
+    subgraph Clients["Clients"]
+        WA[Web App - Voice & Chat]
+        EW[Embed Widget]
+        AD[Admin Dashboard]
+    end
+
+    subgraph API["API Container"]
+        MW[Middleware - Auth, Rate Limit, Tenant]
+        VS[Voice & Chat Service]
+        RS[RAG Service]
+        MS[MCP Service]
+        AS[Analytics Service]
+    end
+
+    subgraph Worker["Worker Container"]
+        WQ[Job Queue Consumer]
+        DP[Document Processor]
+        AU[Audio Uploader]
+        LJ[LLM Judge]
+        NW[Notification Worker]
+    end
+
+    subgraph External["External Services"]
+        PG[(PostgreSQL + pgvector)]
+        RD[(Redis)]
+        S3[(AWS S3)]
+        GL[Gemini Live API]
+    end
+
+    WA --> MW
+    EW --> MW
+    AD --> MW
+    MW --> VS
+    MW --> RS
+    MW --> MS
+    MW --> AS
+    VS --> GL
+    VS --> RS
+    VS --> MS
+    VS --> RD
+    MS --> GL
+    RS --> PG
+    AS --> PG
+    MW --> PG
+    MW --> RD
+    WQ --> DP
+    WQ --> AU
+    WQ --> LJ
+    WQ --> NW
+    WQ --> RD
+    DP --> PG
+    DP --> S3
+    AU --> S3
+    LJ --> PG
+    NW --> PG
 ```
 
-## 2.4 Tech Stack Summary
+### 2.4 Tech Stack
 
-| Category | Technology | Notes |
-|----------|------------|-------|
-| **Backend** | Go | Primary language |
-| **Web Framework** | Fiber or Gin | With gorilla/websocket |
-| **Primary DB** | PostgreSQL | With pgvector extension |
-| **Session/Cache** | Redis | Sessions, caching, rate limits |
-| **Vector DB** | pgvector | PostgreSQL extension, MVP choice |
-| **Document Storage** | S3 Compatible | MinIO/R2/Backblaze/AWS S3 |
-| **Voice AI** | Gemini Live API | Go SDK: `google.golang.org/genai` |
-| **Tool Integration** | MCP | Model Context Protocol |
-| **Analytics** | PostgreSQL (MVP), DuckDB (Phase 2) | |
-| **Deployment** | Docker + Kamal | Self-hosted |
+| Component | Technology |
+|-----------|------------|
+| Language | Go |
+| Web Framework | Fiber or Gin + gorilla/websocket |
+| Primary Database | PostgreSQL with pgvector |
+| Cache & Sessions | Redis |
+| Document Storage | AWS S3 |
+| Voice AI | Gemini Live API (`google.golang.org/genai`) |
+| Tool Integration | MCP (Model Context Protocol) |
+| Deployment | Docker + Kamal |
 
 ---
 
-# 3. API Design
+## 3. End-to-End Conversation Flow
 
-## 3.1 API Overview
+This is the spine of the entire platform. Everything else in this document is a deep dive into one part of this flow.
 
-| API Type | Protocol | Purpose |
-|----------|----------|---------|
-| **REST API** | HTTP/JSON | CRUD operations, admin functions |
-| **WebSocket** | WSS | Real-time voice/chat streaming |
+### 3.1 The Full Flow
 
-## 3.2 REST API Endpoints
+```mermaid
+sequenceDiagram
+    participant C as Customer
+    participant API as API Container
+    participant RD as Redis
+    participant PG as PostgreSQL
+    participant GL as Gemini Live
+    participant MCP as MCP Service
+    participant WK as Worker Container
 
-### Authentication
+    C->>API: Connect via WebSocket (JWT token)
+    API->>API: Validate token, extract org_id
+    API->>RD: Create session state
+    API->>PG: Fetch org config, MCP servers, system prompt
+    API->>MCP: Discover tools, cache in Redis
+    API->>GL: Open Gemini Live session with system prompt + tools
+    API->>C: CONNECTED
 
-```
-POST /api/v1/auth/register
-POST /api/v1/auth/login
-POST /api/v1/auth/refresh
-POST /api/v1/auth/logout
-```
+    loop Each Turn
+        C->>API: Audio chunk (voice) or text (chat)
+        API->>GL: Forward to Gemini
+        GL->>API: Transcription of customer message
+        API->>PG: RAG search — find relevant knowledge chunks
+        GL->>API: AI text response + audio response
+        API->>RD: Update conversation history
+        API->>C: Audio + text response
+        API->>API: Classifier agent scores this turn
+    end
 
-### Organizations
+    alt Customer requests escalation OR score drops below threshold
+        API->>GL: Close Gemini session gracefully
+        API->>PG: Persist full transcript
+        API->>C: "Connecting you to a specialist..."
+        API->>PG: Create escalation record
+        API->>RD: Notify available agents
+    end
 
-```
-GET    /api/v1/orgs                    # List orgs (Super Admin)
-POST   /api/v1/orgs                    # Create org (Super Admin)
-GET    /api/v1/orgs/:org_id            # Get org details
-PATCH  /api/v1/orgs/:org_id            # Update org
-DELETE /api/v1/orgs/:org_id            # Deactivate org (Super Admin)
-```
-
-### Users
-
-```
-GET    /api/v1/orgs/:org_id/users                    # List users
-POST   /api/v1/orgs/:org_id/users                    # Create user
-GET    /api/v1/orgs/:org_id/users/:user_id          # Get user
-PATCH  /api/v1/orgs/:org_id/users/:user_id          # Update user
-DELETE /api/v1/orgs/:org_id/users/:user_id          # Remove user
-POST   /api/v1/orgs/:org_id/users/:user_id/roles    # Assign role
-```
-
-### Sessions
-
-```
-POST   /api/v1/sessions                        # Create session (voice or chat)
-GET    /api/v1/sessions/:session_id            # Get session details
-PATCH  /api/v1/sessions/:session_id            # Update session (escalate, end)
-GET    /api/v1/sessions/:session_id/transcript  # Get transcript
-```
-
-### Documents
-
-```
-GET    /api/v1/orgs/:org_id/documents             # List documents
-POST   /api/v1/orgs/:org_id/documents              # Upload document
-GET    /api/v1/orgs/:org_id/documents/:doc_id      # Get document
-DELETE /api/v1/orgs/:org_id/documents/:doc_id      # Delete document
-PATCH  /api/v1/orgs/:org_id/documents/:doc_id      # Update metadata
+    C->>API: End session
+    API->>PG: Store final transcript + resolution status
+    API->>RD: Clear session state
+    API->>WK: Queue: run LLM Judge, upload audio (if enabled)
 ```
 
-### MCP Servers
+### 3.2 What Happens at Session Start
 
-```
-GET    /api/v1/orgs/:org_id/mcp-servers                    # List MCP servers
-POST   /api/v1/orgs/:org_id/mcp-servers                    # Add MCP server
-GET    /api/v1/orgs/:org_id/mcp-servers/:server_id         # Get MCP server
-PATCH  /api/v1/orgs/:org_id/mcp-servers/:server_id         # Update MCP server
-DELETE /api/v1/orgs/:org_id/mcp-servers/:server_id         # Remove MCP server
-GET    /api/v1/orgs/:org_id/mcp-servers/:server_id/tools   # List tools
-POST   /api/v1/orgs/:org_id/mcp-servers/:server_id/test    # Test connection
-```
+Before the customer says a single word, we do setup work in under 2 seconds:
 
-### System Prompt
+1. Validate the JWT and identify which org this customer belongs to
+2. Create a session record in PostgreSQL and a session state in Redis
+3. Fetch the org's configuration: system prompt, escalation settings, MCP servers
+4. Load cached platform MCP tools from Redis (pre-warmed on startup)
+5. Connect to any org-specific MCP servers, discover their tools
+6. Build the full system prompt: base instructions + org greeting + available tools
+7. Open a Gemini Live session with that system prompt
+8. Send `CONNECTED` to the customer's browser
 
-```
-GET    /api/v1/orgs/:org_id/system-prompt      # Get system prompt
-PATCH  /api/v1/orgs/:org_id/system-prompt      # Update greeting (org config)
-```
+### 3.3 What Happens Each Turn
 
-### Analytics
+On every customer message:
 
-```
-GET    /api/v1/orgs/:org_id/analytics/overview         # Dashboard overview
-GET    /api/v1/orgs/:org_id/analytics/conversations     # Conversation list
-GET    /api/v1/orgs/:org_id/analytics/knowledge-gaps     # Knowledge gaps
-GET    /api/v1/orgs/:org_id/analytics/trends            # Trend data
-GET    /api/v1/orgs/:org_id/analytics/export            # Export report
-```
+1. Audio/text arrives from the customer's browser
+2. We forward it to Gemini Live
+3. Gemini returns: customer transcription + AI response text + AI audio
+4. We search the knowledge base (RAG) for relevant context — this runs in parallel, not sequentially
+5. Gemini generates a response using that context
+6. We send audio + text back to the customer
+7. We update conversation history in Redis
+8. We run the classifier agent to score this turn's quality
 
-### Notifications
+### 3.4 What Happens at Session End
 
-```
-GET    /api/v1/users/:user_id/notifications                      # List notifications
-PATCH  /api/v1/users/:user_id/notifications/:notif_id           # Mark read
-DELETE /api/v1/users/:user_id/notifications/:notif_id           # Dismiss
-```
+When the conversation ends (customer leaves, escalates, or session times out):
 
-### Usage
-
-```
-GET    /api/v1/orgs/:org_id/usage          # Current usage (RPM, TPM)
-```
-
-## 3.3 WebSocket API
-
-### Endpoint
-
-```
-WSS /api/v1/sessions/:session_id/stream
-```
-
-### Authentication
-
-WebSocket authenticates via `Sec-WebSocket-Protocol` header:
-```
-Sec-WebSocket-Protocol: Bearer <jwt>
-```
-
-For v0.1 compatibility, query parameter `?token=<jwt>` is also supported but deprecated.
-Tokens are masked in all server logs.
-
-### Message Types
-
-#### Client to Server
-
-```json
-// Audio chunk (voice)
-{
-  "type": "audio",
-  "data": "<base64-encoded PCM16>",
-  "mimeType": "audio/pcm"
-}
-
-// Text message (chat)
-{
-  "type": "text",
-  "data": "Hello, I need help with my order"
-}
-
-// Tool response
-{
-  "type": "tool_response",
-  "toolCallId": "call_123",
-  "response": { "result": "..." }
-}
-
-// Interrupt (customer interrupting AI)
-{
-  "type": "interrupt"
-}
-
-// End session
-{
-  "type": "end"
-}
-```
-
-#### Server to Client
-
-```json
-// Audio response
-{
-  "type": "audio",
-  "data": "<base64-encoded PCM16>",
-  "mimeType": "audio/pcm"
-}
-
-// Text response
-{
-  "type": "text",
-  "data": "I can help you track your order."
-}
-
-// Transcription
-{
-  "type": "transcription",
-  "role": "customer",
-  "text": "I need to track my order",
-  "finished": true
-}
-
-// Tool call
-{
-  "type": "tool_call",
-  "toolCallId": "call_123",
-  "tool": "lookup_order",
-  "params": { "orderId": "12345" }
-}
-
-// Session state
-{
-  "type": "state",
-  "state": "listening" | "thinking" | "speaking" | "interrupted" | "escalating" | "connecting"
-}
-
-// Error
-{
-  "type": "error",
-  "code": "rate_limit" | "timeout" | "service_unavailable" | "payload_too_large",
-  "message": "...",
-  "requestId": "req_abc123",
-  "retryAfterMs": 5000
-}
-
-// Buffer clear (on interrupt)
-{
-  "type": "buffer_clear"
-}
-
-// End
-{
-  "type": "end",
-  "reason": "customer_hangup" | "escalated" | "completed"
-}
-```
-
-### Session Lifecycle
-
-```
-Client                          Server                          Gemini
-  |                                |                               |
-  |  1. Connect (token)          |                               |
-  |------------------------------->|                               |
-  |                                |  2. Validate + Setup          |
-  |                                |  3. MCP Tool Discovery       |
-  |                                |  4. Build System Prompt      |
-  |                                |------------------------------>|
-  |                                |<------------------------------|
-  |                                |      SETUP_COMPLETE           |
-  |<-------------------------------|                               |
-  |     CONNECTED                   |                               |
-  |                                |                               |
-  |  5. Audio chunk                |                               |
-  |------------------------------->|  6. Forward audio            |
-  |                                |------------------------------>|
-  |                                |<------------------------------|
-  |                                |      Audio + Text             |
-  |<-------------------------------|                               |
-  |     Response                    |                               |
-  |                                |                               |
-  |  [Repeat for conversation]     |                               |
-  |                                |                               |
-  |  7. Tool call (Gemini)        |                               |
-  |<-------------------------------|                               |
-  |  8. Tool response             |                               |
-  |------------------------------->|  9. Forward to Gemini        |
-  |                                |------------------------------>|
-  |                                |<------------------------------|
-  |<-------------------------------|                               |
-  |     Continue                    |                               |
-  |                                |                               |
-  |  10. End session              |                               |
-  |------------------------------->|  11. Close Gemini session     |
-  |                                |------------------------------>|
-  |     CLOSED                     |                               |
-```
+1. Gemini Live session is closed gracefully
+2. Full transcript written to PostgreSQL permanently
+3. Session state cleared from Redis
+4. Worker jobs queued: LLM Judge, audio upload (if org has it enabled)
+5. Resolution status recorded: `resolved_ai`, `resolved_human`, `unresolved`, or `unknown`
 
 ---
 
-# 4. Data Models
+## 4. Voice & Chat Pipeline
 
-## 4.1 PostgreSQL Schema
+This section zooms into the real-time voice/chat part of the flow.
 
-### Organizations
+### 4.1 How Voice Works
 
-```sql
-CREATE TABLE organizations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(255) NOT NULL,
-    slug VARCHAR(100) UNIQUE NOT NULL,
-    status VARCHAR(20) DEFAULT 'active'
-        CHECK (status IN ('active', 'suspended', 'inactive')),
-    settings JSONB DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+The customer's browser captures microphone audio. We stream it to our server via WebSocket as raw PCM audio chunks. Our server forwards those chunks to Gemini Live, which handles speech-to-text, LLM reasoning, and text-to-speech all in one streaming session. The audio response comes back and we forward it to the browser.
 
-CREATE INDEX idx_orgs_slug ON organizations(slug);
-CREATE INDEX idx_orgs_status ON organizations(status);
-```
+This is all happening in real-time, bidirectionally. The customer speaks, hears a response within ~500ms.
 
-### Users
+### 4.2 Audio Specifications
 
-```sql
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    email VARCHAR(255) NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    name VARCHAR(255),
-    role VARCHAR(50) NOT NULL CHECK (role IN ('admin', 'agent', 'member', 'customer')),
-    custom_role_id UUID REFERENCES custom_roles(id),
-    settings JSONB DEFAULT '{}',
-    last_login TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(org_id, email)
-);
+| Parameter | Value |
+|-----------|-------|
+| Format | PCM 16-bit |
+| Sample Rate | 16,000 Hz input; 24kHz from Gemini (resampled to 16kHz for storage) |
+| Channels | Mono |
+| Chunk Duration | ~32ms (512 samples) |
+| Max Chunk Size | 64KB (larger chunks rejected) |
 
-CREATE INDEX idx_users_org ON users(org_id);
-CREATE INDEX idx_users_email ON users(email);
-```
+### 4.3 What Gemini Returns Per Turn
 
-**Password Hashing:** Argon2id with parameters:
-- Memory: 64 MB
-- Iterations: 3
-- Parallelism: 4
-- Salt: 16 bytes, randomly generated, embedded in hash output
-- Max password length: 128 bytes (reject longer with 400 BAD_REQUEST)
+For every turn, Gemini Live sends back through the WebSocket stream:
 
-### Custom Roles
+- **Customer transcription** — text of what the customer said
+- **AI text response** — what the AI decided to say
+- **AI audio response** — spoken version of the response
 
-```sql
-CREATE TABLE custom_roles (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    name VARCHAR(100) NOT NULL,
-    description TEXT,
-    permissions JSONB NOT NULL DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(org_id, name)
-);
+All three are captured. Text goes into conversation history. Audio goes to the customer's speaker and optionally to temp disk for later S3 upload.
 
-CREATE INDEX idx_custom_roles_org ON custom_roles(org_id);
-```
+### 4.4 Session States
 
-### Sessions
+The customer's UI reflects the current state of the conversation:
 
-```sql
-CREATE TABLE sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id),
-    customer_id VARCHAR(255),  -- External customer identifier (org-provided)
-    mode VARCHAR(20) NOT NULL CHECK (mode IN ('voice', 'chat')),
-    status VARCHAR(20) DEFAULT 'active'
-        CHECK (status IN ('active', 'completed', 'escalated', 'failed')),
-    resolution_status VARCHAR(20)
-        CHECK (resolution_status IN ('resolved_ai', 'resolved_human', 'unresolved', 'unknown')),
-    started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    ended_at TIMESTAMP WITH TIME ZONE,
-    satisfaction_score INTEGER CHECK (satisfaction_score BETWEEN 1 AND 5),
-    escalation_reason VARCHAR(100),
-    metadata JSONB DEFAULT '{}'
-);
+| State | Meaning |
+|-------|---------|
+| `connecting` | Session initializing |
+| `listening` | Capturing customer speech |
+| `thinking` | AI processing, RAG searching, tools running |
+| `speaking` | AI responding |
+| `interrupted` | Customer interrupted AI mid-response |
+| `escalating` | Transferring to human agent |
+| `ended` | Session complete |
 
-CREATE INDEX idx_sessions_org ON sessions(org_id);
-CREATE INDEX idx_sessions_status ON sessions(status);
-CREATE INDEX idx_sessions_started ON sessions(started_at);
-CREATE INDEX idx_sessions_customer ON sessions(org_id, customer_id);
-```
+### 4.5 Interruption Handling
 
-### Conversations (Transcripts)
+If the customer speaks while the AI is responding:
 
-```sql
-CREATE TABLE conversations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role VARCHAR(20) NOT NULL CHECK (role IN ('customer', 'ai', 'agent')),
-    content TEXT NOT NULL,
-    audio_url VARCHAR(500),  -- Nullable. Populated only if org has audio storage enabled.
-    tool_calls JSONB,
-    turn_index INTEGER NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+1. Client sends `{ type: "interrupt" }`
+2. Server clears pending audio buffer
+3. Server signals Gemini to stop generating
+4. Session state moves to `listening`
+5. Customer's new input is processed
 
-CREATE INDEX idx_conversations_session ON conversations(session_id);
-CREATE INDEX idx_conversations_session_turn ON conversations(session_id, turn_index);
-```
+### 4.6 Context Window Management
 
-### Documents
+Gemini Live has a context window limit (~10–15 minutes of conversation). To handle long sessions:
 
-```sql
-CREATE TABLE documents (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    file_type VARCHAR(50) NOT NULL CHECK (file_type IN ('pdf', 'docx', 'txt', 'md', 'html')),
-    file_path VARCHAR(500) NOT NULL,
-    file_size INTEGER,
-    category VARCHAR(100),
-    status VARCHAR(20) DEFAULT 'processing'
-        CHECK (status IN ('processing', 'active', 'outdated')),
-    chunks_count INTEGER,
-    metadata JSONB DEFAULT '{}',
-    uploaded_by UUID REFERENCES users(id),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+- We keep the last 20 turns in memory
+- Older turns are compressed and summarized
+- Key entities (order IDs, account numbers, ticket numbers) are never discarded — they're preserved explicitly in session state
+- System prompt is always retained
 
-CREATE INDEX idx_docs_org ON documents(org_id);
-CREATE INDEX idx_docs_status ON documents(status);
-```
+### 4.7 WebSocket Keepalive
 
-### Document Embeddings (pgvector)
+To detect dead connections:
 
-```sql
-CREATE TABLE document_embeddings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    chunk_index INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    embedding VECTOR(768),  -- Dimensionality depends on embedding model
-    metadata JSONB DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+- Server sends a **ping** every 30 seconds
+- Client must respond with **pong** within 10 seconds
+- No pong = connection assumed dead, session marked as failed
 
-CREATE INDEX idx_embeddings_org ON document_embeddings(org_id);
-CREATE INDEX idx_embeddings_doc ON document_embeddings(document_id);
-CREATE INDEX idx_embeddings_vector ON document_embeddings USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
-```
+### 4.8 Session Resumption
 
-### MCP Servers
+If the WebSocket drops unexpectedly:
 
-```sql
-CREATE TABLE mcp_servers (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
-    url VARCHAR(500) NOT NULL,
-    auth_type VARCHAR(50) CHECK (auth_type IN ('none', 'api_key', 'oauth')),
-    auth_config_encrypted BYTEA,  -- AES-256-GCM encrypted credentials
-    status VARCHAR(20) DEFAULT 'disconnected'
-        CHECK (status IN ('connected', 'disconnected', 'error')),
-    server_type VARCHAR(20) DEFAULT 'org'
-        CHECK (server_type IN ('platform', 'org')),
-    last_tested TIMESTAMP WITH TIME ZONE,
-    tools JSONB DEFAULT '[]',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+1. Client reconnects with the same session ID
+2. Server validates session is still alive in Redis
+3. Server rebuilds Gemini config with conversation history
+4. Server sends `RESUMED` state to client
+5. Conversation continues
 
-CREATE INDEX idx_mcp_org ON mcp_servers(org_id);
-CREATE INDEX idx_mcp_type ON mcp_servers(server_type);
-```
-
-### Notifications
-
-```sql
-CREATE TABLE notifications (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    type VARCHAR(50) NOT NULL,
-    title VARCHAR(255) NOT NULL,
-    message TEXT,
-    data JSONB DEFAULT '{}',
-    read BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE INDEX idx_notifs_user ON notifications(user_id);
-CREATE INDEX idx_notifs_user_read ON notifications(user_id, read);
-CREATE INDEX idx_notifs_created ON notifications(created_at DESC);
-```
-
-### Audit Logs
-
-```sql
-CREATE TABLE audit_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id UUID REFERENCES organizations(id) ON DELETE SET NULL,
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    action VARCHAR(100) NOT NULL,
-    resource_type VARCHAR(50),
-    resource_id UUID,
-    details JSONB DEFAULT '{}',
-    ip_address VARCHAR(50),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE INDEX idx_audit_org ON audit_logs(org_id);
-CREATE INDEX idx_audit_user ON audit_logs(user_id);
-CREATE INDEX idx_audit_created ON audit_logs(created_at DESC);
-CREATE INDEX idx_audit_org_user_time ON audit_logs(org_id, user_id, created_at DESC);
-```
-
-## 4.2 Redis Data Structures
-
-### Session State
-
-```
-Key: session:{session_id}
-Type: Hash
-TTL: 30 minutes (refreshed on user activity)
-Fields:
-  - org_id: string (UUID)
-  - user_id: string (UUID)
-  - mode: voice|chat
-  - status: active|escalated|completed
-  - started_at: ISO8601 timestamp
-  - last_activity: ISO8601 timestamp
-  - conversation_history: JSON array (last 20 turns)
-  - context_chunks: JSON array
-  - mcp_tool_state: JSON object
-  - current_turn: integer
-  - preserved_entities: JSON array (order_*, account_*, ticket_* patterns)
-```
-
-### Conversation History
-
-```
-Key: session:{session_id}:history
-Type: List
-TTL: 60 minutes
-Fields: JSON objects [{role, content, timestamp, tool_calls}]
-```
-
-### Rate Limiting
-
-```
-Key: ratelimit:org:{org_id}
-Type: String (counter)
-TTL: 60 seconds
-Value: Request count
-```
-
-### API Key Pool State
-
-```
-Key: apikey:global:pool
-Type: Sorted Set
-TTL: None (persistent)
-Members: Key hashes
-Scores: Last used timestamp
-
-Key: apikey:key:{key_hash}:state
-Type: Hash
-TTL: None (persistent)
-Fields:
-  - status: active|backup|failed
-  - current_rpm: integer
-  - current_tpm: integer
-  - concurrent_sessions: integer
-  - last_used: timestamp
-
-Key: apikey:key:{key_hash}:failover_lock
-Type: String
-TTL: 30 seconds (auto-release)
-Value: "1" (distributed lock for failover)
-```
-
-### MCP Tool Cache
-
-```
-Key: mcp:tools:{server_id}
-Type: String (JSON)
-TTL: 5 minutes
-Value: Tool definitions array
-
-Key: mcp:platform:tools
-Type: String (JSON)
-TTL: 30 minutes (refreshed on service start)
-Value: Platform-wide tool definitions
-```
-
-### User Notifications
-
-```
-Key: notifications:unread:{user_id}
-Type: String (integer)
-Value: Count of unread notifications
-```
-
-## 4.3 S3 Path Structure
-
-```
-s3://bucket/
-├── orgs/
-│   └── {org_id}/
-│       ├── documents/
-│       │   └── {document_id}/
-│       │       └── original.{ext}
-│       ├── sessions/
-│       │   └── {session_id}/
-│       │       └── audio.pcm
-│       └── exports/
-│           └── {date}/
-│               └── analytics.parquet
-```
-
-### Audio Storage Lifecycle
-
-**During a session:**
-- Audio chunks are written to local temp disk at `/tmp/sessions/{session_id}/audio.pcm`
-- Audio is never stored in Redis
-- Each chunk is appended to the file as raw PCM
-
-**Post-session (worker):**
-- Worker uploads audio file from temp disk to S3 asynchronously
-- Path: `orgs/{org_id}/sessions/{session_id}/audio.pcm`
-- On success: `conversations.audio_url` updated for all turns from that session
-- Temp file deleted after 24-hour grace period post-upload
-
-**Retention:**
-- Default: Auto-delete from S3 after 30 days
-- Configurable per org: Super Admin can set longer retention up to 1 year
+If disconnected for more than 30 seconds, the session is ended gracefully.
 
 ---
 
-# 5. Voice Pipeline
+## 5. RAG Pipeline
 
-## 5.1 Audio Flow
+RAG (Retrieval-Augmented Generation) is how the AI answers questions using the business's actual knowledge base rather than making things up.
 
-```
-+------------+    +------------+    +------------+    +------------+
-|  Browser   |    |   Voice    |    |   Gemini    |    |   Voice    |
-| Microphone |-->|  Service   |-->|  Live API   |<--|  Service   |
-|            |    |            |    |            |    |            |
-|            |    | 1. Auth   |    | 2. Stream   |    | 3. Audio  |
-|            |    | 2. Buffer |    |   Audio     |    | 4. Forward|
-|            |    | 3. Forward |    | 3. STT      |    |           |
-|            |    |            |    | 4. LLM       |    |           |
-|            |    |            |    | 5. TTS       |    |           |
-+------------+    +------------+    +------------+    +------------+
-                                                           |
-                                                           v
-                                                     +------------+
-                                                     |  Browser    |
-                                                     |  Speaker    |
-                                                     +------------+
+### 5.1 Document Ingestion
+
+When an org uploads a document, the worker container processes it:
+
+```mermaid
+graph LR
+    A[Document Uploaded to S3] --> B[Worker picks up job]
+    B --> C[Validate type & size]
+    C --> D[Extract text]
+    D --> E[Split into chunks]
+    E --> F[Generate embeddings]
+    F --> G[Store in pgvector]
+    G --> H[Mark document as active]
 ```
 
-## 5.2 Audio Specifications
+Supported file types: PDF, DOCX, TXT, MD, HTML.
 
-| Parameter | Input (Mic) | Output (Speaker) | Storage |
-|-----------|-------------|-----------------|---------|
-| **Format** | PCM 16-bit | PCM 16-bit | PCM 16-bit |
-| **Sample Rate** | 16,000 Hz | 16,000 Hz (resampled from 24kHz) | 16,000 Hz |
-| **Bit Depth** | 16-bit | 16-bit | 16-bit |
-| **Channels** | Mono | Mono | Mono |
-| **Endianness** | Little-endian | Little-endian | Little-endian |
-| **Mime Type** | `audio/pcm` | `audio/pcm` | `audio/pcm` |
-| **Chunk Duration** | ~32ms (512 samples) | ~32ms | N/A |
+### 5.2 Chunking Strategy
 
-**Notes:**
-- Gemini Live API outputs 24kHz audio; backend resamples to 16kHz before storage/transmission
-- Browser handles 24kHz playback in its own AudioContext
-- Max chunk size: 64KB (reject larger with `PAYLOAD_TOO_LARGE` error)
+| Parameter | Value | Why |
+|-----------|-------|-----|
+| Chunk size | 512 tokens | Optimal for semantic search |
+| Chunk overlap | 64 tokens | Prevents losing meaning at boundaries |
+| Method | Sentence-aware splitting | Never cut mid-sentence |
+| Min chunk size | 100 tokens | Discard noise |
+| Max chunk size | 1024 tokens | Split oversized chunks |
 
-## 5.3 Session Initialization Sequence
+### 5.3 Retrieval Flow
 
-```
-1. Client initiates WebSocket connection with JWT
-2. Backend validates JWT and extracts org_id
-3. Backend fetches session state from Redis
-4. Backend retrieves MCP server configs for org
-5. Backend fetches cached platform MCP tools (pre-warmed)
-6. Backend connects to org MCP servers (on-demand, sequential)
-7. Backend discovers tools, validates schemas
-8. Backend builds system prompt with:
-   - Base system instruction (platform)
-   - Greeting message (org-configurable)
-   - RAG context (if available)
-   - Platform MCP tools
-   - Org MCP tools
-9. Backend establishes Gemini Live session with full config
-10. Backend sends CONNECTED state to client
-11. Client begins streaming audio
+When a customer asks something, we search the knowledge base in parallel with the Gemini response:
 
-Target initialization time: < 2 seconds (with pre-warmed MCP cache)
+```mermaid
+graph TD
+    A[Customer Message] --> B[Embed the query]
+    B --> C[Vector search in pgvector - top 20 results]
+    C --> D{Score check}
+    D -->|score > 0.75| E[High confidence - include]
+    D -->|0.50 to 0.75| F[Medium confidence - include with caveat]
+    D -->|score < 0.50| G[Low confidence - exclude]
+    E --> H[Take top 10 chunks]
+    F --> H
+    H --> I[Inject into Gemini prompt as context]
+    G --> J{Any good chunks?}
+    J -->|No| K[Flag as knowledge gap - consider escalation]
 ```
 
-## 5.4 Gemini Live Output Capture
+### 5.4 Relevance Thresholds
 
-Per turn, Gemini Live returns three outputs through the same WebSocket stream. All three are captured and stored.
-
-| Output | Type | Description |
-|--------|------|-------------|
-| **Customer Transcription** | `{"type": "transcription", "role": "customer", ...}` | STT result of customer speech |
-| **AI Text Response** | `{"type": "text", "data": "..."}` | AI's text reply |
-| **AI Audio Response** | `{"type": "audio", "data": "<base64>", ...}` | AI's spoken response (TTS) |
-
-Storage behavior:
-- **Transcription + AI text:** Stored in `conversations` table (per turn, one row per speaker)
-- **AI audio:** Written to temp disk `/tmp/sessions/{session_id}/audio.pcm`, uploaded to S3 post-session
-- **Customer audio:** Written to temp disk alongside AI audio (interleaved or separate), uploaded to S3 post-session
-
-**Note:** All three streams arrive on the same WebSocket connection but may arrive at slightly different times. Each is tagged with sequence metadata to allow accurate interleaving.
-
-## 5.5 Context Management
-
-### Context Window
-
-Gemini Live API context window limit: ~10-15 minutes of conversation.
-
-**Sliding Window Compression:**
-- After 20 turns, oldest turns are compressed
-- Last 20 turns + system prompt always retained
-- Entity preservation: tokens matching patterns `order_*`, `account_*`, `ticket_*`, `customer_*` are never discarded
-
-```
-Session Start
-    |
-    v
-[Turn 1] [Turn 2] [Turn 3] ... [Turn 20]
-    |
-    v
-If turns > 20:
-    |
-    v
-Compress oldest turns
-Keep: Last 20 turns + system prompt + preserved entities
-Discard: Filler content before
-    |
-    v
-Continue conversation
-```
-
-### Session Resumption
-
-If WebSocket connection drops:
-1. Client reconnects with same session_id
-2. Backend validates session from Redis
-3. Backend checks conversation_history in Redis
-4. Backend rebuilds Gemini config with history
-5. Backend reconnects to Gemini with context
-6. Backend sends RESUMED state to client
-
-**Requirements:**
-- Redis TTL must cover max expected disconnection window
-- Conversation history replay limited to last 20 turns
-- Preserved entities always included
-
-## 5.6 Audio Interruption Handling
-
-When client sends `{"type": "interrupt"}`:
-
-```
-1. Backend sends {"type": "buffer_clear"} to client
-2. Backend flushes any pending audio in Redis buffer
-3. Backend sends stop signal to Gemini (cancel generation)
-4. Backend updates session state to "interrupted"
-5. Backend waits for next customer input
-```
-
-## 5.7 Voice States
-
-| State | Description | Client UI |
-|-------|-------------|-----------|
-| **idle** | Waiting for customer | Avatar static |
-| **connecting** | Session initializing | Loading indicator |
-| **listening** | Capturing customer speech | Waveform active |
-| **thinking** | Processing, RAG retrieval, MCP calls | Animated dots |
-| **speaking** | AI responding | Avatar animated |
-| **interrupted** | Customer interrupted | Brief indicator |
-| **escalating** | Transferring to human | Connecting state + wait time |
-| **ended** | Session complete | Satisfaction prompt |
-
-## 5.8 WebSocket Keepalive
-
-```
-Ping interval: 30 seconds
-Pong timeout: 10 seconds
-On pong timeout: Close connection, mark session as failed
-```
+| Score | Action |
+|-------|--------|
+| > 0.75 | Include — confident answer |
+| 0.50–0.75 | Include — AI should express some uncertainty |
+| < 0.50 | Exclude — not relevant enough |
+| All chunks < 0.50 | Flag as knowledge gap, escalate or return fallback |
 
 ---
 
-# 6. RAG Pipeline
+## 6. MCP Integration
 
-## 6.1 Document Ingestion Flow
+MCP (Model Context Protocol) is how the AI calls external tools — things like looking up an order, creating a support ticket, or checking account status.
 
-```
-+------------+    +------------+    +------------+    +------------+
-| Document   |-->| Validation |-->|  Chunking  |-->| Embedding  |
-| Upload     |    | (type,    |    | (semantic) |    | (batch)    |
-| (S3)      |    |  size)    |    | 512 tokens |    |            |
-+------------+    +------------+    +------------+    +------------+
-                                                        |
-                                                        v
-                                                  +------------+
-                                                  |  pgvector   |
-                                                  |  (Indexed)  |
-                                                  +------------+
-```
+### 6.1 Two Types of MCP Servers
 
-## 6.2 Chunking Strategy
+**Platform MCP Servers**
+Provided by us, available to all orgs. Pre-warmed on startup, tool definitions cached in Redis for 30 minutes. Examples: generic order lookup, create ticket, flag knowledge gap.
 
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| **Chunk Size** | 512 tokens | Optimal for semantic search |
-| **Chunk Overlap** | 64 tokens | Prevents boundary concept loss |
-| **Method** | Semantic (sentence-aware) | Prefer splitting on sentence boundaries |
-| **Min Size** | 100 tokens | Discard chunks below threshold |
-| **Max Size** | 1024 tokens | Split oversized chunks |
+**Org MCP Servers**
+Configured by each organization to connect to their own systems (CRM, ERP, etc.). Connected on-demand when a session starts. Credentials encrypted with AES-256-GCM.
 
-## 6.3 Retrieval Flow
+### 6.2 Tool Call Flow
 
-```
-Query
-  |
-  v
-+------------------+
-| Intent           |
-| Classification   |
-+------------------+
-  |
-  v
-+------------------+
-| Embed Query       |
-+------------------+
-  |
-  v
-+------------------+
-| Vector Search     |
-| (Top 20 results) |
-+------------------+
-  |
-  v
-+-------------+-------------+
-| Score > 0.75 | Score < 0.75 |
-| Use        | Discard       |
-+-------------+-------------+
-  |
-  v
-+------------------+
-| Top-K Chunks      |
-| (max 10 chunks)    |
-| + Context Header  |
-+------------------+
-  |
-  v
-+------------------+
-| Build Prompt      |
-| + Inject Context |
-+------------------+
-  |
-  v
-+------------------+
-| Send to Gemini    |
-+------------------+
+```mermaid
+sequenceDiagram
+    participant GL as Gemini Live
+    participant API as API Server
+    participant MCP as MCP Service
+    participant EXT as External Server
+
+    GL->>API: Tool call request (e.g. lookup_order)
+    API->>MCP: Validate + route tool call
+    MCP->>EXT: Execute (timeout: 5s)
+    EXT->>MCP: Result
+    MCP->>API: Return result
+    API->>GL: Forward result
+    GL->>API: Continue conversation
 ```
 
-## 6.4 Relevance Gate
+If a tool call fails or times out, the conversation continues using RAG-only. The failure is logged and the customer is not left hanging.
 
-| Score Range | Action |
-|-------------|--------|
-| **> 0.75** | Include — confident response |
-| **0.50 - 0.75** | Include but flag uncertainty in response |
-| **< 0.50** | Exclude — escalate or return "I don't have information" |
-
-**"No Relevant Context" Path:**
-- All retrieved chunks score < 0.50
-- Agent triggers escalation or returns fallback message
-- Conversation flagged for knowledge gap analysis
-
----
-
-# 7. MCP Integration
-
-## 7.1 MCP Server Types
-
-### Platform MCP Servers
-- Shared across all organizations
-- Pre-warmed on service startup
-- Tools cached in Redis (30 min TTL)
-- Examples: generic_order_lookup, create_ticket, knowledge_search
-
-### Org MCP Servers
-- Configured by each organization
-- Connected on-demand per session
-- Credentials encrypted (AES-256-GCM)
-- Examples: CRM integrations, proprietary APIs
-
-## 7.2 Tool Calling Flow
-
-```
-+--------+    +-----------+    +-----------+    +----------+
-| Gemini |-->|  Voice    |-->|   MCP     |-->| External  |
-| (Call) |    | Service  |    |  Service  |    | Server    |
-|        |    |          |    |           |    |           |
-|lookup_ |    | Validate |    | Execute   |    | API Call  |
-|order   |    | + Route  |    | + Timeout |    |           |
-+--------+    +-----------+    +-----------+    +----------+
-                                       |
-                                       v
-                                  +----------+
-                                  | Response |
-                                  | + Return |
-                                  +----------+
-                                       |
-                                       v
-                                  +----------+
-                                  |  Gemini  |
-                                  |(Continue)|
-                                  +----------+
-```
-
-## 7.3 Timeout & Retry Configuration
+### 6.3 Timeouts & Retries
 
 | Scenario | Timeout | Retry |
-|----------|--------|-------|
-| **MCP Request** | 5 seconds | 2 retries with exponential backoff (1s, 2s) |
-| **MCP Response > 1MB** | Reject | Log warning |
-| **MCP Unavailable** | Fail fast | Continue with RAG-only |
+|----------|---------|-------|
+| MCP request | 5 seconds | 2 retries, exponential backoff (1s, 2s) |
+| Response > 1MB | Reject immediately | None |
+| MCP server unreachable | Fail fast | Continue without tools |
 
-## 7.4 Security Controls
+### 6.4 Security
 
-| Control | Implementation |
-|---------|----------------|
-| **TLS** | TLS 1.3 mandatory for all MCP connections |
-| **Certificate Pinning** | SHA-256 fingerprint validation |
-| **API Key Auth** | Passed via `X-API-Key` header, never in URL |
-| **IP Allowlist** | Only configured URLs callable; resolved on connection |
-| **DNS Rebinding Protection** | Re-resolve on every connection; pin IP; reject redirects |
-| **Request Size Limits** | Max 64KB request, 1MB response |
-| **Network Isolation** | MCP calls from isolated network segment |
-| **Method Restrictions** | GET/POST only unless explicitly configured |
-| **Input Validation** | Strict JSON schema validation before execution |
-| **Execution Timeout** | Max 5 seconds per tool call |
-
-## 7.5 Credential Storage
-
-MCP credentials encrypted with AES-256-GCM:
-- Encryption key stored in environment variable or secrets manager
-- Key derivation: PBKDF2 from secrets manager
-- Salt: Unique per credential
+| Control | Detail |
+|---------|--------|
+| Transport | TLS 1.3 mandatory |
+| API keys | Passed via header, never in URL |
+| Credentials | AES-256-GCM encrypted at rest |
+| Request size | Max 64KB request, 1MB response |
+| Input validation | Strict JSON schema validation before execution |
+| DNS rebinding | Re-resolve on every connection, reject redirects |
 
 ---
 
-# 8. Session Management
+## 7. Session Management
 
-## 8.1 Session Lifecycle
+### 7.1 Session Lifecycle
 
-```
-+--------------------------------------------------------------------------+
-|                         SESSION LIFECYCLE                                |
-|                                                                          |
-|   +--------+     +--------+     +-----------+     +-------+     +----+  |
-|   | START  |---->| ACTIVE |---->| ESCALATE  |---->|  END  |     |FAIL|  |
-|   |        |     |        |     | (optional)|     |       |     |    |  |
-|   +--------+     +---+----+     +-----+-----+     +---+---+     +----+  |
-|                      |                    |             |                  |
-|                      | Error/Timeout      |             |                  |
-|                      v                    v             v                  |
-|                 +---------+        +---------+    +---------+            |
-|                 | FAILED  |        |AGENT WAIT|    | COMPLETE|         |
-|                 +---------+        +-----+-----+    +---------+            |
-|                                    |              |                      |
-|                                    | No agent      |                      |
-|                                    | available     |                      |
-|                                    v              |                      |
-|                              +-----------+        |                      |
-|                              | FALLBACK  |        |                      |
-|                              | (Email +  |        |                      |
-|                              |  Notify)  |        |                      |
-|                              +-----------+        |                      |
-+--------------------------------------------------------------------------+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: Customer connects
+    Active --> Escalated: Customer requests human OR score threshold hit
+    Active --> Completed: Conversation resolved
+    Active --> Failed: Error or timeout
+    Escalated --> AgentWait: Notifying agents
+    AgentWait --> Completed: Agent resolves
+    AgentWait --> Fallback: No agent available
+    Fallback --> Completed: Customer chooses email/callback
+    Completed --> [*]
+    Failed --> [*]
 ```
 
-## 8.2 Escalation Flow
+### 7.2 What's Stored in Redis During a Session
 
-### Escalation Trigger Conditions
-- Customer explicitly requests human ("talk to agent")
-- AI confidence below threshold after retries
-- MCP call fails repeatedly
-- Customer asks about unsupported topic
+Redis holds the active session state for fast access during a live conversation:
 
-### Escalation Sequence
-```
-1. Customer requests escalation
-    |
-    v
-2. AI acknowledges: "Let me connect you with a support specialist"
-    |
-    v
-3. Backend:
-    a. Gracefully closes Gemini Live session
-    b. Persists conversation to PostgreSQL immediately
-    c. Creates escalation record with full context
-    d. Notifies available agents (in-app + configured channels)
-    e. Updates session status to "escalated"
-    |
-    v
-4. Agent receives:
-    - Customer context (name, issue summary)
-    - Full conversation transcript (read-only)
-    - Knowledge gaps flagged by AI
-    - Session duration, satisfaction hints
-    |
-    v
-5. If no agent available:
-    a. Send notification to org (email/in-app)
-    b. Customer sees: estimated wait time or callback option
-    c. Offer: Email | Message | Callback (org-configured)
-```
+- Session ID, org ID, user ID
+- Mode (voice or chat)
+- Current status
+- Conversation history (last 20 turns)
+- Retrieved RAG chunks for this session
+- MCP tool call results
+- Preserved entities (order IDs, account numbers, etc.)
+- Session metadata (language, voice name)
 
-## 8.3 Redis Session Schema
+TTL: 30 minutes, refreshed on every customer message.
 
-```json
-{
-  "id": "uuid",
-  "org_id": "uuid",
-  "user_id": "uuid",
-  "mode": "voice",
-  "status": "active",
-  "started_at": "2026-05-28T10:00:00Z",
-  "last_activity": "2026-05-28T10:05:00Z",
-  "conversation_history": [
-    {"role": "customer", "content": "I need help", "timestamp": "..."},
-    {"role": "ai", "content": "How can I help?", "timestamp": "..."}
-  ],
-  "context_chunks": ["chunk_1", "chunk_2"],
-  "mcp_tool_state": {"last_tool": "lookup_order", "result": "..."},
-  "preserved_entities": [
-    {"type": "order_id", "value": "ORD-12345"},
-    {"type": "account_id", "value": "ACC-67890"}
-  ],
-  "metadata": {
-    "language": "en",
-    "voice_name": "Puck"
-  }
-}
-```
+### 7.3 Escalation Flow
 
-## 8.4 Session TTL Policy
+Escalation triggers when:
+- Customer explicitly asks for a human
+- AI confidence drops below threshold after retries
+- MCP tool fails repeatedly
+- Classifier agent score drops below org-configured threshold (see conversation scoring)
 
-| Event | TTL Action |
-|-------|------------|
-| **Session created** | 30 minutes from start |
-| **Activity (user message)** | Reset to 30 minutes |
-| **Activity (AI response)** | No reset |
-| **Session ends normally** | Delete after 1 hour |
-| **Session fails/escalates** | Delete after 24 hours |
+When escalation triggers:
 
-## 8.5 Idempotency
+1. AI says: *"Let me connect you with a support specialist."*
+2. Gemini Live session is closed gracefully
+3. Full transcript persisted to PostgreSQL immediately
+4. Escalation record created with full context and classifier signals
+5. Available agents notified via configured channels
+6. If no agent available: customer sees wait time estimate + options (email, message, callback)
+7. When agent accepts: they see full transcript, classifier signals, and session summary
 
-All WebSocket messages include an idempotency key:
-```json
-{
-  "type": "audio",
-  "data": "...",
-  "id": "msg_uuid"  // Client-generated, unique per message
-}
-```
+### 7.4 Session TTL Policy
 
-Backend deduplicates messages received within 5 seconds with same ID.
+| Event | TTL |
+|-------|-----|
+| Session created | 30 minutes |
+| Customer sends message | Reset to 30 minutes |
+| AI responds | No reset |
+| Session ends normally | Delete after 1 hour |
+| Session failed or escalated | Delete after 24 hours |
+
+### 7.5 Audio Storage
+
+Audio is **not** stored during the conversation — that would add latency. Instead:
+
+- Audio chunks are written to local temp disk: `/tmp/sessions/{session_id}/audio.pcm`
+- After session ends, worker uploads to S3 asynchronously: `orgs/{org_id}/sessions/{session_id}/audio.pcm`
+- Auto-deleted after 30 days (configurable per org)
+- Audio storage is optional — orgs can disable it entirely
+
+Redis only stores audio **metadata** (file size, path), never the actual audio bytes.
 
 ---
 
-# 9. Multi-Tenant Isolation
+## 8. Authentication & Roles
 
-## 9.1 Isolation Strategy
+### 8.1 Authentication
 
-Soft multi-tenancy with strict logical enforcement.
+We use JWT-based authentication. Access tokens expire in 15 minutes. Refresh tokens last 7 days and are stored server-side in Redis (so we can revoke them).
 
-Every request enforces org_id — no cross-org data access possible.
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as API
+    participant RD as Redis
+    participant PG as PostgreSQL
 
-## 9.2 Isolation Layers
+    U->>API: POST /auth/login (email + password)
+    API->>PG: Verify credentials (Argon2id)
+    API->>API: Generate access token (15min) + refresh token (7d)
+    API->>RD: Store refresh token
+    API->>U: Return both tokens
 
-```
-+------------------------------------------------------------------+
-|                        API REQUEST                                |
-+------------------------------------------------------------------+
-                              |
-                              v
-+------------------------------------------------------------------+
-|                      AUTH MIDDLEWARE                              |
-|   +------------------------------------------------------------+ |
-|   | Validate JWT signature                                     | |
-|   | Extract user_id + org_id                                  | |
-|   | Inject into request context                                | |
-|   +------------------------------------------------------------+ |
-+------------------------------------------------------------------+
-                              |
-                              v
-+------------------------------------------------------------------+
-|                      TENANT MIDDLEWARE                            |
-|   +------------------------------------------------------------+ |
-|   | Validate org_id from JWT matches request                   | |
-|   | Enforce org_id on ALL database queries                     | |
-|   | Enforce org_id on Redis operations                         | |
-|   | Enforce org_id on Vector DB namespace (pgvector WHERE)      | |
-|   | Enforce org_id on S3 paths                                 | |
-|   +------------------------------------------------------------+ |
-+------------------------------------------------------------------+
-                              |
-                              v
-+------------------------------------------------------------------+
-|                        RESPONSE                                   |
-+------------------------------------------------------------------+
+    Note over U,API: On every request
+    U->>API: Request + Bearer token
+    API->>API: Validate JWT signature
+    API->>API: Extract user_id, org_id, permissions
+    API->>API: Proceed or reject
 ```
 
-## 9.3 Threat Model & Mitigations
+**Password hashing:** Argon2id — 64MB memory, 3 iterations, 4 parallelism. Max password length: 128 bytes.
 
-| Threat | Mitigation |
-|--------|-----------|
-| **JWT forged with different org_id** | Validate signature; verify org_id claim; reject |
-| **SQL injection** | Parameterized queries; org_id enforced at query level |
-| **Vector DB collision** | pgvector uses org_id in WHERE clause |
-| **S3 prefix traversal** | S3 keys constructed server-side only; no user input in path |
-| **MCP credential cross-org** | Credentials scoped by org_id; encrypted storage |
-| **Redis data leakage** | Keys prefixed with org_id; validated on access |
+**JWT payload contains:**
+- `sub` — user ID
+- `org_id` — organization ID
+- `role` — base role
+- `permissions` — array of permission strings
+- `exp` / `iat` — expiry and issued-at timestamps
 
-## 9.4 Testing Requirements
+### 8.2 Role Hierarchy
 
-- Unit tests: All queries include org_id filter
-- Integration tests: Cross-org access attempts return 403
-- Security audit: Quarterly review of data access patterns
+```mermaid
+graph TD
+    SA_W[Super Admin - Write]
+    SA_R[Super Admin - Read]
+    AD[Org Admin]
+    AG[Agent]
+    MB[Member - Custom Role]
+    CU[Customer]
 
----
-
-# 10. Authentication & Authorization
-
-## 10.1 Authentication Flow
-
-```
-+--------+    +----------+    +----------+    +----------+
-|  User  |-->|  Login   |-->|  Verify  |-->|  Issue   |
-|        |    | Request |    |  Creds  |    |   JWT   |
-+--------+    +----------+    +----------+    +----------+
-                                             |
-                                             v
-                                      +----------+
-                                      |  Store   |
-                                      |  Refresh |
-                                      |  Token   |
-                                      +----------+
+    SA_W -->|manages| AD
+    SA_R -->|reads| AD
+    AD -->|creates| MB
+    AD -->|manages| AG
 ```
 
-## 10.2 JWT Structure
+| Role | Level | What they can do |
+|------|-------|-----------------|
+| Super Admin (Write) | Platform | Full access to all orgs, system settings, billing |
+| Super Admin (Read) | Platform | Read-only access to all orgs |
+| Admin | Org | Full access within their org, create custom roles |
+| Agent | Org | Handle escalations, view conversations |
+| Member | Org | Custom permissions set by Admin |
+| Customer | - | Voice/chat only, no dashboard access |
 
-```json
-{
-  "sub": "user_uuid",
-  "org_id": "org_uuid",
-  "role": "admin",
-  "custom_role_id": "custom_role_uuid",
-  "permissions": ["docs:read", "docs:write", "analytics:read"],
-  "exp": 1735689600,
-  "iat": 1735686000
-}
-```
+### 8.3 Permissions
 
-**JWT Requirements:**
-- Algorithm: RS256 or HS256
-- Expiry: Access token 15 minutes, Refresh token 7 days
-- Refresh token stored server-side (Redis)
-
-## 10.3 Authorization Flow
-
-```
-Request -> Auth Middleware -> Validate JWT -> Extract Permissions
-                                        |
-                                        v
-                                  +-------------+
-                                  | Check       |
-                                  | Permission  |
-                                  +------+------+
-                                         |
-                            +------------+------------+
-                            v                         v
-                       +--------+              +--------+
-                       | Allow  |              | Deny   |
-                       | Proceed|              |  403   |
-                       +--------+              +--------+
-```
-
----
-
-# 11. Role Management
-
-## 11.1 Role Hierarchy
-
-```
-PLATFORM LEVEL
-|
-+-- Super Admin (Write All)
-|   - Full platform access
-|   - Manage all orgs
-|   - System settings
-|   - Billing management
-|
-+-- Super Admin (Read All)
-    - Read-only platform access
-    - View all orgs
-    - No billing/settings access
-
-ORGANIZATION LEVEL
-|
-+-- Admin
-|   - Full org access
-|   - Create custom roles
-|   - Assign permissions
-|   - Configure MCP servers
-|   - Billing access
-|
-+-- Agent
-|   - Handle escalated calls
-|   - Chat with customers
-|   - View assigned conversations
-|   - No billing/settings access
-|
-+-- Member (Custom Role)
-|   - Configurable permissions
-|   - Admin-created
-|
-+-- Customer
-    - Voice/chat support only
-    - No dashboard access
-```
-
-## 11.2 Fixed Roles
-
-| Role | Level | Description |
-|------|-------|-------------|
-| **Super Admin (Write)** | Platform | Full access to all orgs, settings, billing |
-| **Super Admin (Read)** | Platform | Read-only access to all orgs, settings |
-| **Admin** | Org | Full access within org, create roles |
-| **Agent** | Org | Handle escalations, view conversations |
-| **Customer** | - | Voice/chat only, no dashboard |
-
-## 11.3 Custom Roles
-
-Admin creates custom roles with granular permission toggles.
-
-Example: "Billing Viewer"
-```
-Custom Role: Billing Viewer
-Permissions:
-  - docs:read        [ON]
-  - docs:write       [OFF]
-  - conv:view         [ON]
-  - conv:monitor      [OFF]
-  - conv:takeover    [OFF]
-  - analytics:view    [ON]
-  - analytics:export  [ON]
-  - settings:billing [ON]
-  - settings:billing:write [OFF]
-```
-
----
-
-# 12. Permission Matrix
-
-## 12.1 Permission Categories
+Admins can create custom roles with granular permission toggles:
 
 | Category | Permissions |
 |----------|-------------|
-| **Documents** | docs:read, docs:write, docs:delete, docs:metadata |
-| **Knowledge Base** | kb:configure, kb:chunks, kb:analytics |
-| **AI / Voice** | ai:behavior, ai:mcp, ai:escalation, ai:prompts |
-| **Team** | team:invite, team:permissions, team:remove, team:activity |
-| **Conversations** | conv:view, conv:monitor, conv:takeover |
-| **Analytics** | analytics:view, analytics:export |
-| **Settings** | settings:profile, settings:billing, settings:webhooks |
+| Documents | `docs:read`, `docs:write`, `docs:delete`, `docs:metadata` |
+| Knowledge Base | `kb:configure`, `kb:chunks`, `kb:analytics` |
+| AI / Voice | `ai:behavior`, `ai:mcp`, `ai:escalation`, `ai:prompts` |
+| Team | `team:invite`, `team:permissions`, `team:remove`, `team:activity` |
+| Conversations | `conv:view`, `conv:monitor`, `conv:takeover` |
+| Analytics | `analytics:view`, `analytics:export` |
+| Settings | `settings:profile`, `settings:billing`, `settings:webhooks` |
 
-## 12.2 Permission Toggle Matrix
+### 8.4 System Prompt Generation
 
-| Permission | Admin | Agent | Custom (Example) |
-|------------|-------|-------|-----------------|
-| docs:read | Yes | Yes | Yes |
-| docs:write | Yes | No | Configurable |
-| docs:delete | Yes | No | No |
-| conv:view | Yes | Yes | Yes |
-| conv:monitor | Yes | No | Configurable |
-| conv:takeover | Yes | Yes | No |
-| team:manage | Yes | No | No |
-| analytics:view | Yes | Yes | Yes |
-| analytics:export | Yes | No | Configurable |
-| settings:billing | Yes | No | No |
-| settings:profile | Yes | Yes | Configurable |
+When an org sets up their AI, they choose one of three modes:
+
+| Mode | How it works |
+|------|-------------|
+| **Auto-generate** | We run a lightweight LLM call against the org's uploaded documents and generate a system prompt automatically |
+| **Auto + Edit** | Same as auto-generate, but the admin can review and customize the result |
+| **Custom** | Admin writes the system prompt from scratch |
+
+The generated/saved system prompt is stored per org and injected at session initialization.
 
 ---
 
-# 13. Error Handling & Resilience
+## 9. Data Design
 
-## 13.1 Error Categories
+We use **PostgreSQL** as the single source of truth for all persistent data. pgvector is an extension on the same PostgreSQL instance — no separate vector database.
 
-| Category | Examples | User Response |
-|----------|----------|--------------|
-| **Audio** | Mic denied, WebRTC failed | "Microphone access needed" |
-| **Network** | Connection lost, timeout | Auto-retry with indicator |
-| **RAG** | No context, vector DB unavailable | Escalate or generic response |
-| **MCP** | Timeout, invalid response | Continue with RAG-only |
-| **LLM** | Gemini unavailable, rate limit | "Technical difficulties" |
-| **Auth** | Token expired, invalid org | "Session expired, refresh" |
+### 9.1 Tables Overview
 
-## 13.2 WebSocket Error Schema
+**`organizations`**
+One row per business using the platform. Stores name, slug (used for subdomain), status, and a JSONB settings blob (system prompt config, escalation settings, feature flags, etc.).
 
-```json
-{
-  "type": "error",
-  "code": "rate_limit" | "timeout" | "service_unavailable" | "payload_too_large",
-  "message": "Human-readable description",
-  "requestId": "req_abc123",
-  "retryAfterMs": 5000
-}
+**`users`**
+Everyone who has a login: org admins, agents, members, and customers. Each user belongs to one org. Stores email, hashed password, base role, and optional custom role reference.
+
+**`custom_roles`**
+Org-created roles with specific permission sets. Stored as a JSONB permissions object. One org can have many custom roles.
+
+**`sessions`**
+One row per conversation. Records which org, which customer, voice or chat mode, status, resolution outcome, satisfaction score, and escalation reason if applicable.
+
+**`conversations`**
+The transcript — one row per message turn. Records who said it (customer, AI, or agent), the content, any tool calls made during that turn, and a turn index for ordering.
+
+**`documents`**
+Metadata about uploaded files. Actual files live in S3. Tracks file type, size, processing status, chunk count, and who uploaded it.
+
+**`document_embeddings`**
+The vector representations of document chunks. One row per chunk. Stores the chunk text, its embedding vector (768 dimensions), and a reference back to its parent document. This is what pgvector searches.
+
+**`mcp_servers`**
+MCP server configurations per org. Stores URL, auth type, encrypted credentials, connection status, and cached tool definitions.
+
+**`notifications`**
+In-app notifications for admins and agents. Tracks read/unread status.
+
+**`audit_logs`**
+Immutable log of all admin actions: who did what, when, on which resource. 1-year retention.
+
+**`api_key_pool`**
+Platform-level Gemini API keys. Tracks status, usage (RPM, TPM, concurrent sessions), and pool assignment.
+
+### 9.2 S3 Path Structure
+
+```
+s3://bucket/
+└── orgs/
+    └── {org_id}/
+        ├── documents/
+        │   └── {document_id}/
+        │       └── original.{ext}
+        ├── sessions/
+        │   └── {session_id}/
+        │       └── audio.pcm          ← optional, async upload
+        └── exports/
+            └── {date}/
+                └── analytics.parquet  ← Phase 2
 ```
 
-## 13.3 Resilience Patterns
+### 9.3 Redis Key Structure
 
-### Retry + Backoff
+| Key Pattern | Type | TTL | Stores |
+|-------------|------|-----|--------|
+| `session:{id}` | Hash | 30 min | Full session state |
+| `session:{id}:history` | List | 60 min | Conversation turns |
+| `ratelimit:org:{org_id}` | String | 60 sec | Request counter |
+| `mcp:tools:{server_id}` | String (JSON) | 5 min | Tool definitions |
+| `mcp:platform:tools` | String (JSON) | 30 min | Platform tool definitions |
+| `apikey:global:pool` | Sorted Set | Persistent | Key pool state |
+| `notifications:unread:{user_id}` | String | — | Unread count |
+
+---
+
+## 10. Worker Jobs
+
+The worker container runs background jobs that the API container queues. Jobs are picked up from a Redis-backed queue.
+
+### 10.1 Job Types
+
+**Document Processing**
+Triggered when an org uploads a document. Extracts text, splits into chunks, generates embeddings, stores in pgvector, marks document as active. Updates org on completion via in-app notification.
+
+**Audio Upload**
+Triggered when a session ends (if org has audio enabled). Reads the temp audio file from `/tmp/sessions/{session_id}/audio.pcm`, uploads to S3, deletes the temp file, updates the session record with the S3 URL. Auto-deletes from S3 after 30 days unless configured otherwise.
+
+**LLM Judge**
+Triggered after every completed session. Reviews the full conversation transcript, scores quality, identifies knowledge gaps, and writes actionable feedback to the org's dashboard. Uses a lightweight model at temperature 0.
+
+**Notification Dispatch**
+Triggered by various events (escalation, credit warning, document processed, etc.). Sends notifications via configured channels: in-app, email, SMS, Slack/Teams webhook.
+
+**Analytics Export** *(Phase 2)*
+Exports completed session data to Parquet files in S3 for DuckDB analytical queries.
+
+### 10.2 Job Queue
+
+Jobs are stored in Redis as a list. The API container pushes jobs; the worker container pops and processes them. Failed jobs are retried up to 3 times with exponential backoff, then moved to a dead letter queue and an alert is sent to Super Admin.
+
+---
+
+## 11. Multi-Tenant Isolation
+
+Every organization's data is strictly isolated. An org cannot access another org's data under any circumstances.
+
+### 11.1 How It Works
+
+Every database row has an `org_id`. Every API request carries an `org_id` in the JWT. Middleware validates that the `org_id` in the token matches the resource being accessed before any query runs.
+
+This is enforced at four layers:
+
+| Layer | How |
+|-------|-----|
+| **API Middleware** | Extracts org_id from JWT, injects into request context |
+| **Database Queries** | All queries include `WHERE org_id = ?` — no exceptions |
+| **Vector Search** | pgvector queries always scoped by org_id |
+| **S3 Paths** | Constructed server-side with org_id prefix — user input never touches the path |
+| **Redis Keys** | All keys prefixed with org_id |
+
+### 11.2 Threat Mitigations
+
+| Threat | Mitigation |
+|--------|-----------|
+| Forged JWT with different org_id | Validate JWT signature; org_id claim must match |
+| SQL injection | Parameterized queries everywhere |
+| Vector DB collision | pgvector always scoped by org_id in WHERE clause |
+| S3 path traversal | Paths constructed server-side only |
+| Redis key collision | All keys namespaced with org_id |
+| MCP credential leak | Credentials scoped and encrypted per org |
+
+---
+
+## 12. Error Handling & Resilience
+
+### 12.1 Retry + Backoff
+
+All external calls (Gemini, MCP, S3) retry on failure:
 
 | Attempt | Delay |
 |---------|-------|
-| 1 | 1 second |
-| 2 | 2 seconds |
-| 3 | 4 seconds |
+| 1st retry | 1 second |
+| 2nd retry | 2 seconds |
+| 3rd retry | 4 seconds |
+| After 3 failures | Circuit breaker trips |
 
-### Circuit Breaker
+### 12.2 Circuit Breaker
 
 | State | Condition | Behavior |
 |-------|-----------|----------|
-| **Closed** | < 5 failures | Normal operation |
-| **Open** | 5 failures in 30s | Return fallback immediately |
-| **Half-open** | 30s elapsed | Allow 1 test request |
+| Closed | < 5 failures | Normal operation |
+| Open | 5 failures in 30s | Fail fast, return fallback immediately |
+| Half-open | 30s after opening | Allow 1 test request through |
 
-### Fallback Chain
+### 12.3 Graceful Degradation
 
+If a service is unavailable, the platform degrades gracefully rather than failing completely:
+
+| Scenario | What Happens |
+|----------|-------------|
+| RAG unavailable | AI continues with general knowledge, flags knowledge gap |
+| MCP tools unavailable | AI continues with RAG only |
+| Gemini unavailable | "Technical difficulties" message, escalate to human |
+| All services down | Immediate escalation to human or fallback message |
+
+### 12.4 API Key Pool Failover
+
+We manage a pool of Gemini API keys to handle rate limits and failures:
+
+```mermaid
+graph TD
+    A[Request comes in] --> B{Primary key healthy?}
+    B -->|Yes, < 80% capacity| C[Use primary key]
+    B -->|Warning, 50-80%| D[Use primary, alert Super Admin]
+    B -->|Critical, 80-95%| E[Use primary, urgent alert]
+    B -->|Failed or 100%| F[Acquire distributed lock]
+    F --> G[Switch to backup key]
+    G --> H[Alert: operating on backup]
 ```
-Primary API Key
-    |
-    +-- OK -> Normal
-    |
-    +-- Rate limited -> Retry with backoff
-    |
-    +-- Fails -> Secondary API Key
-    |
-    +-- Fails -> Alert + Queue
-                        |
-                        +-- Escalate to human
-```
 
-## 13.4 Graceful Degradation
+Keys are tracked per: RPM (requests per minute), TPM (tokens per minute), and concurrent sessions. Dynamic round-robin skips keys approaching their limits.
 
-| Level | Condition | User Experience |
-|-------|-----------|-----------------|
-| **Full** | All services available | Normal |
-| **Degraded** | RAG unavailable | "I can help with general questions..." |
-| **Degraded** | MCP unavailable | Continue with RAG only |
-| **Critical** | Gemini unavailable | "Technical difficulties, please try again" |
-| **Outage** | All down | Escalate immediately |
-
-## 13.5 Connection Recovery
+### 12.5 Connection Recovery
 
 | Drop Duration | Action |
 |--------------|--------|
-| < 5 seconds | Auto-reconnect, preserve context |
-| 5-30 seconds | Show "reconnecting" UI, retry 3x |
-| > 30 seconds | End gracefully, flag incomplete |
+| < 5 seconds | Auto-reconnect, context preserved |
+| 5–30 seconds | Show "reconnecting" UI, retry 3 times |
+| > 30 seconds | End session gracefully |
 | > 2 minutes | Mark for review, notify admin |
 
 ---
 
-# 14. Credit & Billing Management
+## 13. WebSocket Error Schema
 
-## 14.1 API Key Architecture
+When the server must send an error over the WebSocket connection, it uses this schema:
+
+```json
+{
+  "type": "error",
+  "code": "rate_limit" | "timeout" | "service_unavailable" | "payload_too_large" | "auth_failed" | "session_not_found",
+  "message": "Human-readable description of what went wrong",
+  "requestId": "req_abc123",
+  "retryAfterMs": 5000
+}
+```
+
+| Code | When | Action |
+|------|------|--------|
+| `rate_limit` | Session or org over limits | `retryAfterMs` set to backoff window |
+| `timeout` | RAG or MCP call exceeded deadline | Retry up to 3 times with exponential backoff |
+| `service_unavailable` | Backend service (Redis, PG, Gemini) is down | `retryAfterMs` = 30s, fallback to graceful degradation |
+| `payload_too_large` | Audio chunk exceeds max size | Client must chunk before sending |
+| `auth_failed` | JWT invalid or expired | Client must re-authenticate |
+| `session_not_found` | Session ID not in Redis | Client must start a new session |
+
+---
+
+## 14. Credit & Billing Management
+
+### 14.1 API Key Pool Architecture
+
+The platform manages a pool of Gemini API keys shared across all organizations. This avoids per-org quota limits and allows centralized rate management.
 
 ```
 +--------------------------------------------------------------------------+
@@ -1597,21 +852,19 @@ Primary API Key
 |   |                                                                      | |
 |   |   +----------+  +----------+  +----------+  +----------+           | |
 |   |   |  Key A   |  |  Key B   |  |  Key C   |  |  Key D   |           | |
-|   |   |  (Pool)  |  |  (Pool)  |  |  (Pool)  |  |  Backup  |           | |
+|   |   |  (Pool)  |  |  (Pool)  |  |  (Pool)  |  | (Backup) |           | |
 |   |   +----------+  +----------+  +----------+  +----------+           | |
 |   +---------------------------------------------------------------------+ |
 |                                                                           |
 |   +---------------------------------------------------------------------+ |
 |   |  Load Distribution                                                     | |
-|   |                                                                      | |
-|   |   Dynamic round-robin across keys                                    | |
+|   |   Dynamic round-robin across healthy keys                            | |
 |   |   Skip keys approaching rate limit                                    | |
-|   |   Monitor: RPM | TPM | Concurrent Sessions                           | |
+|   |   Monitor: RPM | TPM | Concurrent Sessions                            | |
 |   +---------------------------------------------------------------------+ |
 |                                                                           |
 |   +---------------------------------------------------------------------+ |
 |   |  Alert Thresholds                                                     | |
-|   |                                                                      | |
 |   |   > 50% used  -> Warning to Super Admin                             | |
 |   |   > 80% used  -> Urgent alert to Super Admin                        | |
 |   |   ~100% used  -> Failover to backup key                            | |
@@ -1619,580 +872,274 @@ Primary API Key
 +--------------------------------------------------------------------------+
 ```
 
-## 14.2 Key Pool Configuration
-
-Pool size is configurable. Default: 1 key per pool, pools grouped by org.
+### 14.2 Key Pool Configuration
 
 | Pool | API Key | Orgs | Purpose |
 |------|---------|------|---------|
-| Pool 1 | Key A | Configurable | Normal operations |
-| Pool 2 | Key B | Configurable | Normal operations |
-| Pool 3 | Key C | Configurable | Normal operations |
-| Backup | Key D | All | Fallback when any pool key fails |
+| Default | Key A | All | Primary traffic |
+| Overflow | Key B, Key C | All | Handle burst |
+| Backup | Key D | All | Failover when pool exhausted |
 
-## 14.3 Monitoring
+Pool configuration stored in `settings.api_key_pools` in PostgreSQL.
 
-| Metric | Per Key | Per Pool | Per Org (Dashboard) |
-|--------|---------|----------|---------------------|
-| **RPM** | Yes | Yes | No (internal) |
-| **TPM** | Yes | Yes | Yes (cost allocation) |
-| **Concurrent Sessions** | Yes | Yes | No |
-| **Token Cost** | Yes | Yes | Yes (calculated) |
+### 14.3 RPM / TPM Tracking
 
-## 14.4 Failover Behavior
+Each key tracks:
+
+| Metric | Limit | Behavior at threshold |
+|--------|-------|----------------------|
+| RPM (requests/min) | 60 (default, configurable per key) | Route to next key |
+| TPM (tokens/min) | 1M (default) | Route to next key |
+| Concurrent sessions | 50 (default) | Queue or route to next key |
+
+Tracking via Redis sorted set with sliding window:
 
 ```
-Normal Operation
-    |
-    v
-Key A handles its pool
-    |
-    v
-Monitor: RPM | TPM | Sessions
-    |
-    +-- < 50% capacity -> Normal
-    |
-    +-- 50-80% capacity -> Alert Super Admin
-    |   "Approaching limit, prepare backup"
-    |
-    +-- 80-95% capacity -> URGENT Alert
-    |   "Add key now or risk outage"
-    |
-    +-- ~100% or failure -> Distributed lock acquired
-        |
-        v
-        Key D (backup) takes over
-        |
-        v
-        Alert: "Operating on backup key"
+Key: apikey:global:pool
+Type: Sorted Set
+Members: key_id
+Scores: last_used_timestamp
 ```
 
-## 14.5 Cost Tracking
+### 14.4 Alert Thresholds
 
-| Level | What We Track | Visible In |
-|-------|--------------|------------|
-| **Platform** | Total spend | Super Admin |
-| **Pool** | Pool spend | Super Admin |
-| **Org** | Org proportional cost | Org Admin (dashboard) |
+| Utilization | Action |
+|-------------|--------|
+| > 50% | In-app warning to Super Admin |
+| > 80% | Urgent alert + email to Super Admin |
+| ~100% | Failover to backup key + page Super Admin |
+| Backup key also exhausted | Block new sessions, notify all Super Admins |
 
-**Calculation:**
+### 14.5 Failover Behavior
+
+When primary key fails or hits limit:
+
+1. Acquire distributed lock: `lock:apikey:switch`
+2. Mark failed key as `degraded` in pool state
+3. Route new requests to next healthy key
+4. Release lock
+5. Alert Super Admin
+
+Failed key automatically retried after 60 seconds. If it recovers, it rejoins the pool.
+
+### 14.6 Cost Tracking
+
+Per-session token usage is tracked and stored:
+
+```sql
+CREATE TABLE session_costs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    input_tokens INT NOT NULL,
+    output_tokens INT NOT NULL,
+    cost_usd DECIMAL(10, 6) NOT NULL,
+    recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
 ```
-Org Cost = (Org's TPM / Total Platform TPM) x Total Platform Spend
-```
 
-**Note:** This is an approximation. For precise billing, per-session token counts from Gemini usage logs are the source of truth.
+Cost = `(input_tokens × $0.000075/1k) + (output_tokens × $0.0003/1k)` (Gemini 2.0 Flash pricing, approximate).
 
 ---
 
-# 15. Notification System
+## 15. Notifications
 
-## 15.1 Notification Types
+### 15.1 Notification Types
 
-| Type | Trigger | Recipient | Channel |
-|------|---------|-----------|---------|
-| **Credit Warning** | Credits < 50% | Super Admin | In-app, Email |
-| **Credit Critical** | Credits < 20% | Super Admin | In-app, Email, SMS |
-| **Credit Exhausted** | Credits < 5% | Super Admin | In-app, Email, SMS, urgent |
-| **Key Pool Warning** | Pool > 50% | Super Admin | In-app |
-| **Key Pool Failure** | Pool key fails | Super Admin | In-app, Email |
-| **MCP Server Down** | MCP unreachable | Org Admin | In-app, Email |
-| **Escalation Threshold** | X escalations/hour | Org Admin | In-app, Email |
-| **System Health** | Service unhealthy | Super Admin | In-app, Email |
-| **Document Processed** | Doc indexing complete | Org Admin | In-app |
+| Event | Who Gets Notified | Channels |
+|-------|------------------|---------|
+| Credit < 50% | Super Admin | In-app, Email |
+| Credit < 20% | Super Admin | In-app, Email, SMS |
+| Credit < 5% | Super Admin | In-app, Email, SMS (urgent) |
+| API key pool warning | Super Admin | In-app |
+| API key failure | Super Admin | In-app, Email |
+| MCP server down | Org Admin | In-app, Email |
+| Escalation threshold hit | Org Admin | In-app, Email |
+| Document processed | Org Admin | In-app |
+| System unhealthy | Super Admin | In-app, Email |
 
-## 15.2 Notification Preferences
+### 15.2 Channels
 
-| Channel | Configurable | Options |
-|---------|-------------|---------|
-| **In-app** | Always on | Unread badge |
-| **Email** | Yes | On/Off, digest frequency |
-| **SMS** | Yes | On/Off for critical only |
-| **Teams/Slack** | Yes | Webhook URL |
-
-## 15.3 Escalation Fallback
-
-When no human agent is available during escalation:
-
-1. Customer sees: Estimated wait time or callback option
-2. Org receives notification via configured channels
-3. Customer can select: Email | Message | Callback
+| Channel | Configurable | Notes |
+|---------|-------------|-------|
+| In-app | Always on | Unread badge counter |
+| Email | Yes — on/off, digest frequency | |
+| SMS | Yes — critical only | |
+| Slack / Teams | Yes — webhook URL | |
 
 ---
 
-# 16. Analytics & Logging
+## 16. Analytics & Logging
 
-## 16.1 Analytics Data Points
+### 16.1 Metrics We Track
 
-| Category | Metrics |
-|----------|---------|
-| **Volume** | Total calls/chats, daily/weekly/monthly |
-| **Escalation** | % escalated, reasons, resolution status |
-| **AI Performance** | Answer success rate, struggle topics, knowledge gaps |
-| **Knowledge Gaps** | Unanswered questions flagged |
-| **Satisfaction** | Feedback, ratings (1-5), implicit resolution (call-back) |
-| **Additional** | Peak hours, failed queries, topic breakdown |
+| Category | What |
+|----------|------|
+| Volume | Total calls/chats, daily/weekly/monthly |
+| Escalation | % escalated, reasons, resolution status |
+| AI Performance | Answer success rate, struggle topics, RAG hit rate |
+| Knowledge Gaps | Unanswered questions flagged by LLM Judge |
+| Satisfaction | Ratings (1–5), implicit resolution (callback within 24h) |
+| Usage | Peak hours, failed queries, topic breakdown, token spend per org |
 
-## 16.2 Resolution Tracking
+### 16.2 Resolution Tracking
 
-| Status | Definition |
-|--------|------------|
-| **resolved_ai** | AI handled without escalation, customer satisfied |
-| **resolved_human** | Escalated, human resolved the issue |
-| **unresolved** | Escalated, issue not resolved |
-| **unknown** | Session ended without clear outcome |
+| Status | Meaning |
+|--------|---------|
+| `resolved_ai` | AI handled it, customer satisfied |
+| `resolved_human` | Escalated, human resolved it |
+| `unresolved` | Escalated, issue not resolved |
+| `unknown` | Session ended without clear outcome |
 
-**Implicit Resolution:** If customer calls back about the same issue within 24 hours, original session marked as unresolved.
+**Implicit resolution rule:** If the same customer contacts support about the same issue within 24 hours, the original session is marked `unresolved`.
 
-## 16.3 Analytics Flow
+### 16.3 Analytics Flow
 
-```
-Conversation Ends
-    |
-    v
-+-------------+     +-------------+     +-------------+
-|   Store in   |---->|  Aggregate   |---->| Dashboard   |
-|   PostgreSQL  |     |   (Queries)  |     |   (Read)    |
-+-------------+     +-------------+     +-------------+
-                          |
-                          v
-                   +-------------+
-                   |   Export    |
-                   |  (Parquet)  |
-                   +-------------+
-                          |
-                          v
-                   +-------------+
-                   |   DuckDB     |
-                   |  (Phase 2)  |
-                   +-------------+
+For MVP, analytics queries run directly on PostgreSQL. Phase 2 adds DuckDB for complex analytical queries on Parquet exports.
+
+```mermaid
+graph LR
+    A[Session ends] --> B[Store in PostgreSQL]
+    B --> C[Dashboard queries PostgreSQL directly]
+    B --> D[Worker exports to Parquet in S3]
+    D --> E[DuckDB queries Parquet - Phase 2]
 ```
 
-## 16.4 Logging Strategy
+### 16.4 Log Retention
 
 | Log Type | What | Retention |
 |----------|------|-----------|
-| **API Logs** | All requests, response times, org_id | 30 days |
-| **Session Logs** | Session events, errors, tool calls | 90 days |
-| **Audit Logs** | User actions, changes, admin operations | 1 year |
-| **Error Logs** | Exceptions, failures, stack traces | 30 days |
+| API logs | All requests, response times, org_id | 30 days |
+| Session logs | Events, errors, tool calls | 90 days |
+| Audit logs | Admin actions, changes | 1 year |
+| Error logs | Exceptions, stack traces | 30 days |
 
 ---
 
-# 17. Infrastructure & Deployment
+## 17. Real-Time Conversation Scoring
 
-## 17.1 Deployment Strategy
+### 17.1 Overview
 
-**Docker + Kamal (Self-hosted)**
+Every turn during a live customer conversation, a lightweight **Classifier Agent** runs in parallel to the main Gemini Live session. It evaluates the conversation state and outputs a health score (0.0–1.0) that drives live dashboard visibility and human takeover decisions.
 
-```
-+------------------+
-|    Kamal         |
-|  Deployment Tool  |
-+------------------+
-        |
-        v
-+------------------+
-|    Docker         |
-|   Containers       |
-+------------------+
-        |
-        v
-+------------------+
-|  Application      |
-|   Server(s)       |
-+------------------+
-```
-
-## 17.2 Container Architecture
-
-| Container | Purpose |
-|-----------|---------|
-| **api** | Go API server (REST + WebSocket) |
-| **worker** | Background job processor (document processing, exports) |
-| **redis** | Session state, caching, rate limiting |
-| **postgres** | Primary database (with pgvector) |
-
-## 17.3 Worker Container
-
-The worker container handles all asynchronous background jobs. It is decoupled from the API server and runs as a separate process.
-
-### Purpose
-
-- Offload long-running tasks from the request path
-- Ensure reliable job completion independent of client connections
-- Enable horizontal scaling of background processing
-
-### Job Queue
-
-The job queue is backed by Redis. A dedicated Redis list acts as a FIFO queue:
-
-```
-Key: worker:jobs
-Type: List
-Operations: RPUSH (enqueue), BLPOP (dequeue)
-```
-
-Workers atomically claim jobs using `BLPOP` with timeout. Jobs include a type discriminator and payload:
-
-```json
-{
-  "id": "job_uuid",
-  "type": "audio_upload" | "document_processing" | "llm_judge" | "analytics_export" | "parquet_export" | "notification",
-  "payload": { ... },
-  "created_at": "ISO8601",
-  "retry_count": 0
-}
-```
-
-Failed jobs are re-enqueued with exponential backoff (max 3 retries).
-
-### Worker Jobs
-
-| Job Type | Trigger | Description |
-|----------|---------|-------------|
-| **audio_upload** | Session ends | Uploads session audio from temp disk to S3 |
-| **document_processing** | Document uploaded | Validates, chunks, embeds, indexes into pgvector |
-| **llm_judge** | Session ends | Runs post-session quality analysis |
-| **analytics_export** | Scheduled (daily) | Generates Parquet exports for analytics |
-| **parquet_export** | On demand | Exports requested report to S3 |
-| **notification** | Various triggers | Sends async notifications (email, webhook) |
-
-### Audio Upload Flow
-
-```
-Session Ends
-    |
-    v
-API server enqueues: audio_upload job
-    |
-    v
-Worker picks up job
-    |
-    v
-Worker reads audio from temp disk: /tmp/sessions/{session_id}/audio.pcm
-    |
-    v
-Worker uploads to S3: orgs/{org_id}/sessions/{session_id}/audio.pcm
-    |
-    v
-On success: Update conversations.audio_url for all turns from this session
-On failure: Re-enqueue with retry (max 3 attempts)
-    |
-    v
-Temp file deleted after successful upload + 24h grace period
-```
-
-### LLM Judge Execution
-
-The LLM Judge runs asynchronously after session ends:
-
-```
-Session Ends
-    |
-    v
-API server enqueues: llm_judge job with session_id
-    |
-    v
-Worker fetches full conversation transcript from PostgreSQL
-    |
-    v
-Worker invokes LLM Judge (Gemini 2.5 Flash or Gemini 3 Flash, temperature 0)
-    |
-    v
-Judge outputs:
-  - Quality score (0.0-1.0)
-  - Per-signal breakdown (confidence, sentiment, progress, kg_risk)
-  - Knowledge gaps identified
-  - Actionable feedback for org
-    |
-    v
-Worker stores results in PostgreSQL (conversation_scores table)
-    |
-    v
-Knowledge gaps queued as notification to org admin
-```
-
-**Output Storage Schema (conversation_scores table):**
-
-```sql
-CREATE TABLE conversation_scores (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    overall_score DECIMAL(3,2) NOT NULL CHECK (overall_score BETWEEN 0 AND 1),
-    confidence_score DECIMAL(3,2) NOT NULL,
-    sentiment_score DECIMAL(3,2) NOT NULL,
-    progress_score DECIMAL(3,2) NOT NULL,
-    kg_risk_score DECIMAL(3,2) NOT NULL,
-    signal_breakdown JSONB DEFAULT '{}',
-    suggested_action VARCHAR(50),
-    knowledge_gaps JSONB DEFAULT '[]',
-    agent_feedback TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE INDEX idx_scores_session ON conversation_scores(session_id);
-CREATE INDEX idx_scores_overall ON conversation_scores(overall_score);
-```
-
----
-
-## 17.4 Infrastructure Requirements
-
-| Component | Requirement |
-|-----------|-------------|
-| **Redis** | Single instance for MVP; Sentinel/Cluster for scale |
-| **PostgreSQL** | Single instance for MVP; Streaming replication for scale |
-| **Application** | Stateless; horizontally scalable |
-| **S3 Compatible** | External (MinIO/R2/Backblaze/S3) |
-
----
-
-# 18. Non-Functional Requirements
-
-## 18.1 Performance Targets
-
-| Metric | Target |
-|--------|--------|
-| **Response Latency** | < 2 seconds for AI response |
-| **Audio Latency** | < 500ms for voice (mic to speaker) |
-| **Session Init** | < 2 seconds (with pre-warmed MCP) |
-| **Concurrent Sessions** | 1,000 per project (Gemini limit) |
-| **Session Recovery** | < 5 seconds reconnection |
-
-## 18.2 Availability Targets
-
-| Level | Target |
-|-------|--------|
-| **Platform** | 99.9% uptime |
-| **Degraded Mode** | < 1 hour before escalation |
-
-## 18.3 Security Requirements
-
-| Requirement | Implementation |
-|-------------|----------------|
-| **Encryption at rest** | All data encrypted (database, Redis, S3) |
-| **Encryption in transit** | TLS 1.3 |
-| **Password hashing** | Argon2id (64MB, 3 iterations, 4 parallelism) |
-| **MCP credentials** | AES-256-GCM encryption |
-| **MFA** | Super Admin required, Org Admin recommended |
-| **Audit logging** | All admin actions logged |
-
-## 18.4 Scale Targets
-
-| Metric | MVP Target | Scale Target |
-|--------|-----------|--------------|
-| **Concurrent calls** | 50 | 500 |
-| **Orgs** | 10 | 100+ |
-| **Documents per org** | 100 | 10,000 |
-| **Sessions per day** | 1,000 | 50,000 |
-
----
-
-# Appendix A: Glossary
-
-| Term | Definition |
-|------|------------|
-| **API** | Application Programming Interface |
-| **JWT** | JSON Web Token — stateless authentication token |
-| **MCP** | Model Context Protocol — standard for AI tool integration |
-| **RAG** | Retrieval-Augmented Generation — AI technique using external knowledge |
-| **RPM** | Requests Per Minute |
-| **S3** | Simple Storage Service — object storage |
-| **TPM** | Tokens Per Minute |
-| **UUID** | Universally Unique Identifier |
-| **WebSocket** | Bidirectional real-time communication protocol |
-
----
-
-# Appendix B: Open Decisions
-
-| ID | Decision | Status |
-|----|----------|--------|
-| **OD-001** | Vector DB Provider | Locked: pgvector |
-| **OD-002** | Deployment | Locked: Docker + Kamal |
-| **OD-003** | S3 Provider | TBD |
-
----
-
-| **OD-001** | Vector DB Provider | Locked: pgvector |
-| **OD-002** | Deployment | Locked: Docker + Kamal |
-| **OD-003** | S3 Provider | TBD |
-
----
-
-*Document Status: Draft -- Pending Final Approval*
-*Next Steps: Review with team, validate against PRD, confirm decisions*
-
----
-
-# 19. Real-Time Conversation Scoring
-
-## 19.1 Overview
-
-Every turn during a live customer conversation, a lightweight **Classifier Agent** runs in parallel to the main Gemini Live session. It evaluates the conversation state and outputs a health score. This score drives live dashboard visibility and human takeover decisions.
-
-**Model:** Gemini 2.5 Flash or Gemini 3 Flash at temperature 0
+**Model:** Gemini 2.5 Flash or Gemini 3 Flash, temperature 0
 **Trigger:** Every conversation turn (customer message + AI response)
-**Output:** Score 0.0-1.0 + per-signal breakdown + suggested action
+**Output:** Score + per-signal breakdown + suggested action, stored in Redis during session
 
 ---
 
-## 19.2 Signal Taxonomy
+### 17.2 Signal Taxonomy
 
-### Confidence & Grounding (Weight: 40%)
+Four independent signals are computed per turn and combined into a single score.
+
+**Confidence & Grounding — Weight 40%**
 
 Measures whether the AI is drawing from actual knowledge or hallucinating.
 
 | Condition | Score |
 |-----------|-------|
-| RAG retrieval, chunk score > 0.75 | 1.0 |
-| RAG retrieval, chunk score 0.50-0.75 | 0.7 |
-| RAG retrieval, chunk score < 0.50 | 0.3 |
+| RAG chunk score > 0.75 | 1.0 |
+| RAG chunk score 0.50–0.75 | 0.7 |
+| RAG chunk score < 0.50 | 0.3 |
 | No RAG context available | 0.2 |
-| AI explicitly says "I don't know" / "I can't help" | 0.4 |
+| AI says "I don't know" / "I can't help" | 0.4 |
 | MCP tool call succeeds | +0.15 bonus |
-| MCP tool call fails | -0.20 penalty |
+| MCP tool call fails | −0.20 penalty |
 
-**Calculation:** Average across the last 5 turns. Cap at 1.0.
-
-### Customer Sentiment & Frustration (Weight: 35%)
-
-Measures whether the customer is satisfied or escalating.
+**Customer Sentiment & Frustration — Weight 35%**
 
 | Condition | Score |
 |-----------|-------|
-| Explicit escalation request ("talk to a human," "frustrated") | 0.0 |
-| High frustration markers ("doesn't work," "repeating," "why") | 0.1-0.3 |
+| Explicit escalation request | 0.0 (immediate override) |
+| High frustration markers ("doesn't work," "repeating," "why") | 0.1–0.3 |
 | Mild skepticism ("okay but," "I'm not sure," "hmm") | 0.5 |
 | Neutral / cooperative ("okay," "got it") | 0.7 |
 | Satisfied / positive ("thanks," "perfect," "that helps") | 0.95 |
 
-**Calculation:** Score the last customer message + the one before it. Average them.
-**Override:** If explicit escalation request detected, sentiment score = 0.0 immediately, regardless of average.
+Score the last two customer messages and average them.
 
-### Progress Toward Resolution (Weight: 15%)
-
-Measures whether the conversation is making headway.
+**Progress Toward Resolution — Weight 15%**
 
 | Turn Count | Base Score |
 |------------|------------|
-| Turn 1-3 | 1.0 |
-| Turn 4-5 | 0.8 |
-| Turn 6-8 | 0.6 |
-| Turn 9-12 | 0.4 |
+| Turn 1–3 | 1.0 |
+| Turn 4–5 | 0.8 |
+| Turn 6–8 | 0.6 |
+| Turn 9–12 | 0.4 |
 | Turn 13+ | 0.2 |
 
-**Penalties:**
+**Penalties:** Same question twice (−0.30), AI self-contradiction (−0.20), "I already told you" (−0.40)
+**Bonuses:** Follow-up building on prior answer (+0.10), MCP tool returned actionable result (+0.20)
 
-| Condition | Adjustment |
-|-----------|------------|
-| Customer asks the same question twice | -0.30 |
-| AI contradicts itself | -0.20 |
-| Customer says "I already told you" | -0.40 |
-
-**Bonuses:**
-
-| Condition | Adjustment |
-|-----------|------------|
-| Customer asks a follow-up building on prior answer | +0.10 |
-| MCP tool call returns actionable result | +0.20 |
-
-### Knowledge Gap Risk (Weight: 10%)
-
-Measures likelihood the LLM Judge will flag this conversation post-session.
+**Knowledge Gap Risk — Weight 10%**
 
 | Condition | Score |
 |-----------|-------|
-| All RAG chunks scored < 0.50 | 0.1 |
-| MCP tool called but returned error | 0.2 |
+| All RAG chunks < 0.50 | 0.1 |
+| MCP tool called but error returned | 0.2 |
 | AI responds despite low confidence | 0.3 |
 | RAG context found and used | 0.9 |
 | Question matches known FAQ / common issue | 0.95 |
 
-**Calculation:** Average of last 3 retrieved chunk relevance scores, capped at 1.0.
+---
+
+### 17.3 Overall Score
+
+```
+score = (0.40 × confidence) + (0.35 × sentiment) + (0.15 × progress) + (0.10 × kg_risk)
+```
+
+Result range: **0.0 – 1.0**
 
 ---
 
-## 19.3 Overall Score Calculation
+### 17.4 Threshold Tiers
 
-```
-score = (0.40 x confidence) + (0.35 x sentiment) + (0.15 x progress) + (0.10 x kg_risk)
-```
-
-Result range: **0.0 - 1.0**
-
----
-
-## 19.4 Threshold Tiers
-
-Default thresholds (org-configurable):
+Default thresholds — org-configurable per deployment settings.
 
 | Range | Status | Action |
 |-------|--------|--------|
-| 0.70 - 1.00 | Green | Normal. Continue. |
-| 0.50 - 0.69 | Yellow | Monitor. Flag on dashboard. Optional admin alert. |
-| 0.30 - 0.49 | Orange | At risk. Dashboard notification. Suggest takeover. |
-| 0.00 - 0.29 | Red | Critical. Auto-notify admin. Immediate takeover recommended. |
+| 0.70 – 1.00 | 🟢 Green | Normal. Continue. |
+| 0.50 – 0.69 | 🟡 Yellow | Monitor. Flag on dashboard. Optional admin alert. |
+| 0.30 – 0.49 | 🟠 Orange | At risk. Dashboard notification. Suggest takeover. |
+| 0.00 – 0.29 | 🔴 Red | Critical. Auto-notify admin. Immediate takeover recommended. |
 
 **Org-configurable overrides:**
 - Red threshold: 0.2 (permissive) to 0.5 (aggressive)
 - Auto-escalate on Red: toggle on/off per org
-- Yellow/Orange thresholds: adjustable within platform bounds
 
 ---
 
-## 19.5 Worked Example
-
-**Context:** Turn 7, customer says "this still isn't working."
-
-| Signal | Value | Weighted |
-|--------|-------|---------|
-| Confidence (RAG hit 0.8, no MCP) | 0.80 | 0.40 x 0.80 = 0.32 |
-| Sentiment ("still isn't working") | 0.20 | 0.35 x 0.20 = 0.07 |
-| Progress (Turn 7, no resolution) | 0.50 | 0.15 x 0.50 = 0.075 |
-| KG Risk (chunks scored 0.6-0.7) | 0.65 | 0.10 x 0.65 = 0.065 |
-| **Total** | | **0.53 -> Yellow** |
-
-Dashboard flags the conversation. Admin can monitor or initiate takeover.
-
----
-
-## 19.6 Human Takeover Flow
-
-When a conversation is flagged (Orange or Red), or admin manually decides to intervene:
+### 17.5 Scoring Flow
 
 ```
-1. Admin sees flagged conversation on dashboard
-   - Current score + which signal tanked
-   - Last 3 turns preview
-   - Suggested reason ("Customer frustrated," "AI out of knowledge," etc.)
-
-2. Admin clicks "Take Over"
-
-3. System:
-   a. Pauses Gemini Live session gracefully
-   b. Persists full conversation to PostgreSQL immediately
-   c. Bundles classifier signals + context for the agent
-
-4. Customer hears:
-   "Thanks for your patience. A support specialist has reviewed our
-    conversation and would like to help. One moment please..."
-
-5. Human agent receives:
-   - Full conversation transcript (read-only)
-   - Per-signal score breakdown
-   - Classifier's flagged reason
-   - Session duration + turn count
-   - Any knowledge gaps or failed tool calls
-
-6. Agent resolves issue
-   - Resolved -> session marked resolved_human
-   - Further escalation needed -> marked escalated
+Customer Message
+      ↓
+Gemini Live processes turn
+      ↓
+Classifier Agent runs (parallel, async)
+      ↓
+Score computed → stored in Redis as: session:{session_id}:score
+      ↓
+Dashboard polls / receives push update
+      ↓
+If score < threshold: Flag conversation + notify admin + log suggested action
 ```
+
+**Redis key during session:**
+
+```
+Key: session:{session_id}:score
+Type: Hash
+TTL: 30 minutes
+Fields: overall_score, confidence, sentiment, progress, kg_risk, tier, suggested_action, updated_at
+```
+
+Post-session, worker persists final score to `conversation_scores` table.
 
 ---
 
-## 19.7 Dashboard Real-Time View
+### 17.6 Dashboard Real-Time View
 
 Live conversations panel shows per-conversation:
 
@@ -2202,105 +1149,65 @@ Live conversations panel shows per-conversation:
 | Customer | Identifier if provided by org |
 | Mode | Voice / Chat |
 | Turn Count | Current turn number |
-| Current Score | 0.0-1.0 with color indicator |
+| Current Score | 0.0–1.0 with color indicator |
 | Score Trend | Arrow: improving / stable / declining |
 | Top Signal | Which signal is lowest right now |
 | Status | Active / Flagged / Takeover Pending |
 
-Admins can click any row to see the full live transcript + per-signal breakdown in real time.
+Admins can click any row to see full live transcript + per-signal breakdown in real time.
 
 ---
 
-## 19.8 Scoring Flow During Session
+### 17.7 Human Takeover Flow
 
-```
-Customer Message
-      |
-      v
-Gemini Live processes turn
-      |
-      v
-Classifier Agent runs (parallel, async)
-      |
-      v
-Score computed: 0.0 - 1.0
-      |
-      v
-Score + breakdown stored in Redis (per session)
-      |
-      v
-Dashboard polls / receives push update
-      |
-      v
-If score < threshold:
-   - Flag conversation
-   - Notify admin (if auto-notify enabled)
-   - Log suggested action
-```
-
-Scores are stored in Redis during the session for real-time access:
-
-```
-Key: session:{session_id}:score
-Type: Hash
-TTL: 30 minutes
-Fields:
-  - overall_score: decimal (0.0-1.0)
-  - confidence: decimal
-  - sentiment: decimal
-  - progress: decimal
-  - kg_risk: decimal
-  - tier: green|yellow|orange|red
-  - suggested_action: string
-  - updated_at: timestamp
-```
-
-Post-session, final score is persisted to `conversation_scores` table by the worker.
+1. **Admin sees flagged conversation** — current score, which signal tanked, last 3 turns preview, suggested reason
+2. **Admin clicks "Take Over"**
+3. **System:** Pauses Gemini Live gracefully → persists full transcript → bundles classifier signals for agent
+4. **Customer hears:** "Thanks for your patience. A support specialist has reviewed our conversation and would like to help. One moment please..."
+5. **Human agent receives:** Full transcript (read-only), per-signal score breakdown, flagged reason, session duration + turn count, knowledge gaps or failed tool calls
+6. **Agent resolves** → `resolved_human` or → escalated
 
 ---
 
-# 20. System Prompt Generation
+## 18. System Prompt Generation
 
-## 20.1 Overview
+### 18.1 Overview
 
 The system prompt is the base instruction injected into every Gemini Live session. It defines how the AI behaves, what tone it uses, and what constraints it follows.
 
-System prompt generation has three modes, configurable per org:
+Three modes, configurable per org:
 
 | Mode | Description |
 |------|-------------|
-| **Auto-generate** | AI analyzes org's uploaded documents and generates a tailored prompt |
-| **Auto+Edit** | AI generates a prompt; admin can review and customize before activation |
+| **Auto-generate** | Lightweight LLM call against org's documents → generates tailored prompt automatically |
+| **Auto + Edit** | Same as auto-generate, admin reviews and customizes before activation |
 | **Custom** | Admin writes the system prompt from scratch |
 
 ---
 
-## 20.2 System Prompt Generation Model
+### 18.2 Generation Model
 
-The system prompt is generated using **Gemini 2.5 Flash** (temperature 0.2 for slight creativity, deterministic output).
+**Gemini 2.5 Flash** at temperature 0.2 (slight creativity, deterministic output).
 
-Inputs to the generator:
+**Inputs to the generator:**
 - All active documents from the org's knowledge base (text content only)
 - Org name and industry (from org settings)
 - Conversation context examples (if available)
-- Custom instructions provided by admin (if mode is Auto+Edit or Custom)
+- Custom instructions provided by admin (if mode is Auto + Edit or Custom)
 
-Output: A structured system prompt stored in the org's configuration.
+**Output:** Structured system prompt stored per org and injected at session initialization.
 
 ---
 
-## 20.3 System Prompt Storage
-
-The generated system prompt is stored in the `organizations.settings` JSONB field or in a dedicated table:
+### 18.3 Storage Schema
 
 ```sql
 CREATE TABLE system_prompts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-    mode VARCHAR(20) NOT NULL CHECK (mode IN ('auto', 'auto_edit', 'custom')),
-    content TEXT NOT NULL,
-    generator_version VARCHAR(20),
-    is_active BOOLEAN DEFAULT FALSE,
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    mode       VARCHAR(20) NOT NULL CHECK (mode IN ('auto', 'auto_edit', 'custom')),
+    content    TEXT NOT NULL,
+    is_active  BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -2309,40 +1216,11 @@ CREATE INDEX idx_prompts_org ON system_prompts(org_id);
 CREATE INDEX idx_prompts_active ON system_prompts(org_id, is_active);
 ```
 
-The active prompt is rebuilt on every session initialization from this storage.
-
 ---
 
-## 20.4 System Prompt Modes
+### 18.4 System Prompt Structure
 
-### Auto-generate
-
-1. Admin enables auto-generate mode
-2. System reads all active documents for the org
-3. System invokes Gemini Flash to generate prompt
-4. Prompt is activated immediately
-5. Auto-regeneration triggered on: document upload, document update, admin request
-
-### Auto+Edit
-
-1. System generates prompt (same as auto-generate)
-2. Admin reviews generated prompt in dashboard
-3. Admin can edit custom instructions, tone, or constraints
-4. Admin activates the prompt
-5. Auto-regeneration updates the draft; admin must re-approve after edits
-
-### Custom
-
-1. Admin writes prompt from scratch in dashboard editor
-2. System validates prompt (checks for unsafe content, required sections)
-3. Admin activates custom prompt
-4. No auto-regeneration unless admin requests it
-
----
-
-## 20.5 System Prompt Structure
-
-Generated and custom prompts follow this structure:
+All modes produce a prompt following this structure:
 
 ```
 [Base Instruction]
@@ -2369,7 +1247,7 @@ You are a professional support agent for [Org Name].
 
 ---
 
-## 20.6 System Prompt Regeneration Triggers
+### 18.5 Regeneration Triggers
 
 | Trigger | Action |
 |---------|--------|
@@ -2379,4 +1257,94 @@ You are a professional support agent for [Org Name].
 | Admin requests | Regenerate immediately |
 | Weekly schedule | Auto-regenerate if docs changed |
 
-Regeneration is asynchronous (worker job). Active sessions use the current prompt until session ends.
+Regeneration is async (worker job). Active sessions use the current prompt until session ends.
+
+---
+
+## 19. Infrastructure & Deployment
+
+### 15.1 Containers
+
+| Container | What It Runs |
+|-----------|-------------|
+| `api` | Go HTTP + WebSocket server |
+| `worker` | Go background job processor |
+
+Both run the same binary. The `worker` container starts in worker mode via an environment variable or CLI flag.
+
+External services (PostgreSQL, Redis, S3) are not containerized by us in production — they run as managed services or dedicated instances.
+
+### 15.2 Deployment
+
+**Docker + Kamal** — self-hosted deployment. Kamal handles zero-downtime deploys, container management, and rollbacks.
+
+### 19.3 Scaling
+
+For MVP, everything runs on a single server. For scale:
+
+| Component | Scale Strategy |
+|-----------|---------------|
+| `api` container | Stateless — add more instances behind a load balancer |
+| `worker` container | Add more instances — they compete for jobs from the queue |
+| PostgreSQL | Streaming replication |
+| Redis | Sentinel / Cluster mode |
+| S3 | Externally managed, scales automatically |
+
+---
+
+## 20. Non-Functional Requirements
+
+### 16.1 Performance
+
+| Metric | Target |
+|--------|--------|
+| AI response latency | < 2 seconds |
+| Voice audio latency | < 500ms (mic to speaker) |
+| Session initialization | < 2 seconds |
+| Session resumption | < 5 seconds |
+| Concurrent sessions | 1,000 per Gemini project |
+
+### 16.2 Availability
+
+| Level | Target |
+|-------|--------|
+| Platform uptime | 99.9% |
+| Max degraded time before escalation | < 1 hour |
+
+### 16.3 Security
+
+| Requirement | Implementation |
+|-------------|----------------|
+| Encryption at rest | All data encrypted — database, Redis, S3 |
+| Encryption in transit | TLS 1.3 |
+| Password hashing | Argon2id (64MB, 3 iterations, 4 parallelism) |
+| MCP credentials | AES-256-GCM |
+| MFA | Required for Super Admin, recommended for Org Admin |
+| Audit logging | All admin actions logged |
+| JWT algorithm | RS256 |
+
+### 16.4 Scale Targets
+
+| Metric | MVP | Scale |
+|--------|-----|-------|
+| Concurrent calls | 50 | 500 |
+| Organizations | 10 | 100+ |
+| Documents per org | 100 | 10,000 |
+| Sessions per day | 1,000 | 50,000 |
+
+---
+
+## 21. Open Decisions
+
+| ID | Decision | Status |
+|----|----------|--------|
+| OD-001 | S3 provider | Locked: AWS S3 |
+| OD-002 | Web framework (Fiber vs Gin) | TBD |
+| OD-003 | Job queue implementation (Redis list vs dedicated table) | TBD |
+| OD-004 | Embedding model for pgvector (affects vector dimensions) | TBD |
+| OD-005 | LLM Judge model selection | TBD |
+
+---
+
+*Document Status: Draft — Pending Review*
+*Reference: PRD at `docs/prd.md`*
