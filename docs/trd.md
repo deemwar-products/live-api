@@ -1,9 +1,9 @@
 # Voice AI Customer Support Platform — Technical Requirements Document
 
-**Version:** 1.3
+**Version:** 1.4
 **Author:** Sreyash Reddy (IAmCyphr)
 **Last Updated:** 2026-05-28
-**Status:** Draft
+**Status:** Approved
 
 ---
 
@@ -500,7 +500,7 @@ Redis holds the active session state for fast access during a live conversation:
 - Session ID, org ID, user ID
 - Mode (voice or chat)
 - Current status
-- Conversation history (last 20 turns)
+- Conversation history (active turns within current token threshold — see Section 4.6)
 - Retrieved RAG chunks for this session
 - MCP tool call results
 - Preserved entities (order IDs, account numbers, etc.)
