@@ -4,71 +4,105 @@
 
 **What:** AI-powered voice and chat customer support platform for businesses.
 
+**Why:** Businesses need 24/7 customer support that handles 80-90% of queries autonomously, reducing human workload while improving response times.
+
 **Core Loop:**
-1. Business uploads knowledge base (docs, FAQs, integrations)
-2. Customers interact via voice or chat on business's subdomain
-3. AI responds using RAG + MCP + Gemini Live API
-4. Escalation to human when needed (configurable toggle)
+1. Business uploads knowledge base (documents, FAQs, integrations)
+2. Customers interact via voice or chat on business's subdomain or embedded widget
+3. AI responds using RAG + MCP tools + Gemini Live API
+4. Escalation to human agent when needed (configurable toggle)
 5. LLM Judge evaluates conversations and feeds back knowledge gaps
 
 **Target:** 80-90% automation rate
 
 ---
 
-## 2. Architecture
-
-### 2.1 Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Language | Go |
-| Primary DB | PostgreSQL |
-| Analytics DB | DuckDB + S3 Parquet |
-| Vector DB | Per-org namespace |
-| Document Store | S3 (per-org prefix) |
-| Session Store | Redis |
-| AI | Gemini Live API |
-| Integrations | MCP (Model Context Protocol) |
-
-### 2.2 Three Interfaces
+## 2. Three Interfaces
 
 | Interface | Who | Access |
 |-----------|-----|--------|
-| Platform Dashboard | Super Admin | All orgs, system settings, alerts |
-| Business Dashboard | Org Admins | Own docs, team, AI config, analytics |
-| Customer Web App | End customers | Chat/Voice interaction |
+| **Platform Dashboard** | Super Admin (platform team) | All orgs, system settings, internal alerts |
+| **Business Dashboard** | Org Admins + Teams | Own docs, team management, AI config, analytics |
+| **Customer Web App** | End customers | Chat/Voice interaction |
 
-### 2.3 Customer Access
-
-- Subdomain per org: `{org-slug}.platform.com`
-- Embeddable widget for external websites
+### Customer Access Points
+- Subdomain per org: `<Live-api>{org-slug}.platform.com`
+- Embeddable widget for company's website
+- API exposed for integration with existing chatbots
 - Voice + Chat available from launch
 
 ---
 
 ## 3. Roles & Permissions
 
+### 3.0 Role Hierarchy (Tree Structure)
+
+```
+Platform (Super Admin)
+├── Super Admin (Full Access)
+│   ├── Read-write Admin
+│   │   ├── All write permissions
+│   │   └── Platform configuration
+│   └── Read-only Admin
+│       ├── View all orgs
+│       └── No write access
+│
+└── Organizations
+    └── <Organization>
+        ├── Org Admin (Full Org Access)
+        │   ├── Agent Team Lead
+        │   │   ├── Manage agents
+        │   │   ├── View escalations
+        │   │   └── Priority assignment
+        │   ├── Human Agent
+        │   │   ├── Take escalated calls
+        │   │   ├── View assigned queue
+        │   │   └── Update ticket status
+        │   ├── Content Manager
+        │   │   ├── Upload documents
+        │   │   ├── Manage knowledge base
+        │   │   └── View search analytics
+        │   └── Analyst
+        │       ├── View dashboards
+        │       ├── Export reports
+        │       └── Question tagging
+        │
+        └── Customer (End User)
+            ├── Chat interaction
+            └── Voice interaction
+```
+
 ### 3.1 Platform Roles
 
-| Role | Who |
-|------|-----|
-| Super Admin | Platform team |
-| Admin | Business owners |
-| Customer | End consumers |
+| Role | Who | Access Level |
+|------|-----|--------------|
+| **Super Admin** | Platform team | Full platform access |
+| Read-only Admin | Team members | View all, no write access |
+| Read-write Admin | Key decision makers | Platform changes |
 
-### 3.2 Org-Level Permissions
+### 3.2 Business/Organization Roles
 
-Admins can assign granular permissions to team members:
+| Role | Who | Access |
+|------|-----|--------|
+| **Org Admin** | Business owners | Full org access - manage all settings |
+| **Agent Team Lead** | Team manager | Manage agent team, view escalations |
+| **Human Agent** | Support staff | Take escalated calls/chats |
+| **Content Manager** | Document owner | Upload/manage documents, analytics |
+| **Analyst** | Analytics team | View-only access to reports |
+
+### 3.3 Org-Level Permissions
+
+Admins can create custom roles and assign granular permissions:
 
 | Category | Permissions |
 |----------|-------------|
 | Documents | Upload, Delete, View, Edit Metadata |
-| Knowledge Base | Configure RAG, Manage Chunks, View Analytics |
+| Knowledge Base | Configure RAG, Manage Chunks, View Search Analytics |
 | AI / Voice | Configure Behavior, Manage MCP, Escalation Rules |
-| Team | Invite, Assign Permissions, Remove, View Activity |
-| Conversations | View Transcripts, Monitor Calls, Take Over |
-| Analytics | View Dashboard, Export Reports |
-| Settings | Edit Org Profile, Manage Webhooks |
+| Team | Create Roles, Invite Members, Assign Permissions, Manage Agents |
+| Conversations | View Transcripts, Monitor Calls, Take Over Escalations |
+| Analytics | View Dashboard, Export Reports, Question Tagging |
+| Settings | Edit Org Profile, Manage Webhooks, Greeting Message |
 
 ---
 
@@ -78,82 +112,145 @@ Admins can assign granular permissions to team members:
 
 **Sources (MVP):**
 - File upload (PDF, docs, FAQs)
-- Manual entry
+- Manual content entry
 - API integration (Notion, Confluence, Zendesk)
 
-**RAG:** 512 tokens chunk, 64 overlap, top-20 retrieval
+**RAG Pipeline:**
+- Chunk size: 512 tokens, 64 overlap
+- Top-20 retrieval, relevance threshold 0.5
+- Per-org vector namespace isolation
 
-**Future:** URL scraping
+**Future:** URL scraping (React-based pages require special handling)
 
 ### 4.2 System Prompt Configuration
 
+**Note:** Platform's core system prompt CANNOT be overwritten by businesses. Businesses can only APPEND their custom instructions.
+
 | Mode | Description |
 |------|-------------|
-| Auto-generate | AI analyzes docs → generates prompt |
-| Auto + Edit | Auto-generated, user can customize |
-| Custom | User writes prompt from scratch |
+| Auto-generate | AI analyzes existing docs → generates initial prompt |
+| Auto + Edit | Auto-generated, user can customize/add to platform prompt |
+| Custom Append | User adds instructions that append to platform prompt |
 
-### 4.3 MCP Tools
+### 4.3 Greeting Message (Separate from System Prompt)
 
-| Provider | Tools |
-|----------|-------|
-| Platform | RAG, Send Notification, Create Ticket, Knowledge Gap Flag |
-| Business | Own MCP servers (future) |
+Configurable per organization:
+- Toggle to enable/disable custom greeting
+- User can set opening message (e.g., "Welcome to Ford. How can I help?")
+- Separate from AI behavior/system prompt configuration
+
+### 4.4 MCP Tools
+
+**Platform-Provided (Mandatory):**
+| Tool | Purpose |
+|------|---------|
+| RAG Retrieval | Query org's knowledge base |
+| Send Notification | SMS/WhatsApp for escalation |
+| Create Ticket | Log unresolved issues |
+| Knowledge Gap Flag | Notify business about content gaps |
+| **Credit Alert** | Alert internal team when API credits are low |
+
+**Business-Provided (Future):**
+- Companies can connect their own MCP servers
+- Validation and sandboxing required
+- Team-based MCP grouping
 
 **Future connectors:** Notion, Google Calendar, Email, Generic API
 
-### 4.4 Escalation
+### 4.5 Escalation
 
-**Toggle-based:**
+**Toggle-based with two modes:**
 
-| Mode | Action |
-|------|--------|
-| Live | Real-time handoff to human agent |
-| Async | Notification via SMS/WhatsApp/Email |
+| Mode | Trigger | Action |
+|------|---------|--------|
+| **Live** | Human agent available | Route to available agent (Teams/Microsoft integration) |
+| **Async** | No active agents | Send SMS/WhatsApp/Email notification to org |
 
-### 4.5 Feedback System (LLM Judge)
+**Agent Management:**
+- Queue-based routing with priority system
+- Check agent availability before routing
+- Multiple agents can be assigned to same org
+- Priority order configurable by admin
 
-- Evaluates conversation quality
-- Identifies knowledge gaps
+### 4.6 Feedback System (LLM Judge)
+
+**Purpose:** Continuous improvement through AI evaluation.
+
+**Function:**
+- Judge evaluates whether AI answered correctly
+- Identifies knowledge gaps in real-time
 - Sends actionable feedback to business with context
-- Business updates KB → better future responses
+- Business updates knowledge base → better future responses
+- Question tagging by topic (e.g., Ford → Blue Cruise, Login Issues)
 
-### 4.6 Analytics Dashboard
+### 4.7 Analytics Dashboard
+
+**Metrics tracked per org:**
 
 | Category | Metrics |
-|----------|----------|
-| Volume | Total calls/chats, daily/weekly/monthly |
-| Escalation | % escalated, reasons |
-| AI Performance | Answer success rate, struggle topics |
-| Knowledge Gaps | Unanswered questions flagged |
-| Satisfaction | Feedback, ratings |
-| Additional | Peak hours, failed queries, topics breakdown |
+|----------|---------|
+| **Volume** | Total calls/chats, daily/weekly/monthly |
+| **Escalation** | % escalated, reasons, response times |
+| **AI Performance** | Answer success rate, struggle topics |
+| **Knowledge Gaps** | Unanswered questions flagged |
+| **User Satisfaction** | Feedback, ratings |
+| **Peak Hours** | At what times most customers are calling |
+| **Topic Tags** | Frequently asked question categories |
+
+**Platform-Level Analytics:**
+- Cross-org performance overview
+- Credit/usage monitoring
+- System health metrics
 
 ---
 
 ## 5. Multi-Tenant Isolation
 
-**Requirement:** Org A cannot view Org B's data.
+**Requirement:** Organization A must never be able to view, access, or infer Organization B's data.
 
-**Isolation:** All rows have `org_id`, separate namespaces, S3 prefixes, API validates org context.
+**Isolation Points:**
+- All database rows have `org_id`
+- Vector DB namespaces per org
+- S3 prefixes per org (`s3://bucket/org-{id}/...`)
+- API gateway validates org context on every request
+- MCP tools scoped to respective orgs
+- Agent team assignments are org-specific
 
 ---
 
-## 6. Error Handling & Alerting
+## 6. Alerting
+
+### 6.1 Platform Alerting (Internal)
+
+**Alert triggers:**
+| Trigger | Action |
+|---------|--------|
+| Service failures | Email to platform team |
+| High error rates | Email to platform team |
+| Escalation channel failure | Email to platform team |
+| **Low API credits** | Email to platform team (via Credit Alert MCP) |
+
+### 6.2 Business Alerting (External)
+
+- Escalation notifications to org agents
+- Knowledge gap alerts to content managers
+- Usage/cost alerts (future)
+
+---
+
+## 7. Error Handling
 
 | Pattern | Details |
 |---------|---------|
 | Retry + Backoff | 3 retries, exponential (1s, 2s, 4s) |
 | Circuit Breaker | Trip after 5 failures, half-open after 30s |
-| Timeout | RAG: 3s, MCP: 5s, configurable |
+| Timeout | RAG: 3s, MCP: 5s, configurable per org |
 | Fallback Messages | Configurable per org |
 | Dead Letter Queue | Failed escalations queued for retry |
 
-**Platform Alerting:** Email to core team on service failures.
-
 ---
 
-## 7. Success Metrics
+## 8. Success Metrics
 
 | Metric | Target |
 |--------|--------|
@@ -161,43 +258,63 @@ Admins can assign granular permissions to team members:
 | Escalation rate | <20% |
 | AI accuracy | Judge scores >80% |
 | Response latency | <2 seconds |
+| Customer satisfaction | TBD post-launch |
+
+**Additional KPIs:**
+- Time to onboard (speed to go live)
+- Knowledge base coverage (% of FAQ topics covered)
+- Escalation feedback loop speed
 
 ---
 
-## 8. MVP Scope
+## 9. MVP Scope
 
 | Component | MVP |
 |-----------|-----|
 | User Auth + Org Onboarding | ✅ |
 | Knowledge Upload (File + Manual + API) | ✅ |
 | RAG-based AI responses | ✅ |
-| System Prompt (Auto + Edit + Custom) | ✅ |
+| System Prompt (Auto + Edit, platform prompt protected) | ✅ |
+| Greeting Message Configuration | ✅ |
 | Chat + Voice channels | ✅ |
-| MCP tools (Platform) | ✅ |
-| Escalation (Live + Async) | ✅ |
+| Customer Access (Subdomain + Widget + API) | ✅ |
+| MCP tools (Platform-provided mandatory) | ✅ |
+| Escalation (Live queue + Async notification) | ✅ |
+| Human Agent team management | ✅ |
 | LLM Judge + Feedback | ✅ |
+| Question Tagging | ✅ |
 | Analytics Dashboard | ✅ |
 | Error Handling + Alerting | ✅ |
 | Multi-tenant Isolation | ✅ |
 
 ## Out of Scope (v0.2+)
 
-URL scraping, Business-provided MCP, Pre-built connectors, SSO, Custom domains
+- URL scraping (React pages require special handling)
+- Business-provided MCP servers
+- Pre-built connectors (Notion, Calendar, etc.)
+- SSO authentication
+- Custom domain routing
+- Onboarding wizard detail
 
 ---
 
-## 9. Key Decisions
+## 10. Key Decisions Summary
 
 | Decision | Choice |
 |----------|--------|
-| Language | Go |
-| Database | PostgreSQL + DuckDB/S3 |
 | AI | Gemini Live API |
-| Roles | Super Admin + Admin (granular) + Customer |
-| Channels | Voice + Chat |
-| Knowledge | File + Manual + API |
-| MCP | Hybrid (Platform + Future business) |
-| Escalation | Toggle: Live / Async |
-| System Prompt | Auto / Auto+Edit / Custom |
-| Feedback | LLM Judge |
-| Isolation | Strict org-level |
+| Roles | Super Admin + Org Roles (Admin, Agent, Content, Analyst) |
+| Channels | Voice + Chat (both at launch) |
+| Customer Access | Subdomain + Widget + API |
+| Knowledge | File upload + Manual + API integration |
+| MCP | Platform tools (mandatory) + Business tools (future) |
+| Escalation | Queue-based Live / Async Toggle |
+| System Prompt | Auto-generate + Edit + Append only (no override) |
+| Greeting | Separate configurable message |
+| Feedback | LLM Judge with question tagging |
+| Isolation | Strict org-level (no cross-org data access) |
+| Platform Alerting | Email on failures + Credit alerts |
+
+---
+
+*Note: Technical implementation details (tech stack, database schema, API contracts) are covered in TRD.*
