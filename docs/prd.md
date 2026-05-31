@@ -145,7 +145,19 @@ Configurable per organization:
 - User can set opening message (e.g., "Welcome to Ford. How can I help?")
 - Separate from AI behavior/system prompt configuration
 
-### 4.4 MCP Tools
+### 4.4 Voice Experience Commitments
+
+These are platform-level guarantees that define the quality of every customer voice interaction.
+
+| Commitment | Behaviour |
+|------------|-----------|
+| **Natural interruption** | Customer can interrupt the AI mid-response at any time; AI stops, listens, and continues from the new query |
+| **Session resilience** | Connection drops under 5 seconds auto-recover with full context intact; reconnect attempts made up to 3× for drops up to 30 seconds |
+| **Page refresh tolerance** | Refreshing the browser does not end the session; conversation resumes within a 30-minute window |
+| **No partial responses** | If interrupted, the AI never delivers an incomplete or incorrect answer — it waits for the customer's full query |
+| **Graceful degradation** | If any backend service is degraded, customers receive clear messaging and are offered escalation rather than a silent failure |
+
+### 4.5 MCP Tools
 
 **Platform-Provided (Mandatory):**
 | Tool | Purpose |
@@ -163,7 +175,7 @@ Configurable per organization:
 
 **Future connectors:** Notion, Google Calendar, Email, Generic API
 
-### 4.5 Escalation
+### 4.6 Escalation
 
 **Toggle-based with two modes:**
 
@@ -178,7 +190,20 @@ Configurable per organization:
 - Multiple agents can be assigned to same org
 - Priority order configurable by admin
 
-### 4.6 Feedback System (LLM Judge)
+**Customer Escalation Journey:**
+
+The customer is never left in the dark during a handoff. The platform delivers a consistent 4-phase experience:
+
+| Phase | What the Customer Sees |
+|-------|------------------------|
+| **Initiated** | "I'm connecting you with a support specialist. Please hold." |
+| **Waiting** | Animated connecting indicator with estimated wait time |
+| **Agent Found** | "A specialist is on the way. Your conversation context has been shared." |
+| **Transfer Complete** | Human agent joins via chat or phone based on org configuration |
+
+**Context Handoff Guarantee:** The full conversation transcript, retrieved knowledge, and customer context are automatically passed to the human agent. The customer never has to repeat themselves.
+
+### 4.7 Feedback System (LLM Judge)
 
 **Purpose:** Continuous improvement through AI evaluation.
 
@@ -189,19 +214,53 @@ Configurable per organization:
 - Business updates knowledge base → better future responses
 - Question tagging by topic (e.g., Ford → Blue Cruise, Login Issues)
 
-### 4.7 Analytics Dashboard
+### 4.8 Analytics Dashboard
 
 **Metrics tracked per org:**
 
-| Category | Metrics |
-|----------|---------|
-| **Volume** | Total calls/chats, daily/weekly/monthly |
-| **Escalation** | % escalated, reasons, response times |
-| **AI Performance** | Answer success rate, struggle topics |
-| **Knowledge Gaps** | Unanswered questions flagged |
-| **User Satisfaction** | Feedback, ratings |
-| **Peak Hours** | At what times most customers are calling |
-| **Topic Tags** | Frequently asked question categories |
+| Category | Metrics | Refresh |
+|----------|---------|---------|
+| **Volume** | Total calls/chats, daily/weekly/monthly | Real-time |
+| **Escalation** | % escalated, reasons, response times | Real-time |
+| **AI Performance** | Answer success rate, struggle topics | Daily |
+| **Knowledge Gaps** | Unanswered questions flagged | Daily |
+| **User Satisfaction** | Composite score (see below) | Daily |
+| **Peak Hours** | At what times most customers are calling | Daily |
+| **Topic Tags** | Frequently asked question categories | Daily |
+
+**Satisfaction Scoring Model:**
+
+Satisfaction is measured automatically using a two-part system — no manual input required.
+
+| Component | How It Works |
+|-----------|-------------|
+| **Voice Sentiment Analysis** | Real-time tone analysis during the call |
+| **AI Rating Agent** | Separate AI agent reviews the full transcript post-call and assigns a quality score |
+
+Combined score bands:
+
+| Score | Rating |
+|-------|--------|
+| 85 – 100 | Excellent |
+| 70 – 84 | Good |
+| 50 – 69 | Needs Attention |
+| 0 – 49 | Poor |
+
+**Out-of-Box Question Tagging Categories:**
+
+Every conversation is automatically tagged by topic. Businesses get these categories on day one, with the ability to add custom ones.
+
+| Category | Examples |
+|----------|----------|
+| **Account** | Password reset, profile update, access issues |
+| **Billing** | Payment, invoice, subscription, refund |
+| **Product** | Features, pricing, how-to, compatibility |
+| **Order** | Status, tracking, cancellation, return |
+| **Technical** | Errors, bugs, integration, API |
+| **General** | Greeting, feedback, complaint, compliment |
+| **Unanswered** | Questions the AI could not answer (flagged for knowledge gap review) |
+
+Admins can create additional custom categories and manually re-tag conversations as needed.
 
 **Platform-Level Analytics:**
 - Cross-org performance overview
@@ -256,7 +315,9 @@ Configurable per organization:
 
 ---
 
-## 8. Success Metrics
+## 8. Success Metrics & Platform Capacity
+
+### 8.1 Success Metrics
 
 | Metric | Target |
 |--------|--------|
@@ -264,12 +325,26 @@ Configurable per organization:
 | Escalation rate | <20% |
 | AI accuracy | Judge scores >80% |
 | Response latency | <2 seconds |
-| Customer satisfaction | TBD post-launch |
+| Customer satisfaction | Composite score >70 (Good band) |
 
 **Additional KPIs:**
 - Time to onboard (speed to go live)
 - Knowledge base coverage (% of FAQ topics covered)
 - Escalation feedback loop speed
+
+### 8.2 Platform Capacity Commitments
+
+These are the guaranteed capacity baselines the platform is designed to support at launch.
+
+| Commitment | Capacity |
+|------------|----------|
+| **Concurrent voice calls** | 100 per org / 1,000 platform-wide |
+| **Document processing** | 1,000 documents per day per org |
+| **Knowledge base searchable** | Within 5 minutes of document upload |
+| **Voice response latency** | <2 seconds end-to-end |
+| **API requests** | 10,000 requests/min per org |
+
+Capacity scales automatically with usage. Per-org limits are configurable by the platform team.
 
 ---
 
@@ -305,7 +380,19 @@ Configurable per organization:
 
 ---
 
-## 10. Key Decisions Summary
+## 10. Delivery Roadmap
+
+| Phase | Focus | Key Deliverables |
+|-------|-------|-----------------|
+| **Phase 1 — Core (POC)** | Voice + RAG foundation | Voice pipeline, document upload, RAG-based responses, session management, basic escalation, analytics dashboard, multi-tenant isolation |
+| **Phase 2 — Integrations** | MCP + tool connectivity | Admin UI for MCP server configuration, tool execution engine, RAG + live data combined in responses |
+| **Phase 3 — Expansion** | Multi-channel + learning loop | SMS, WhatsApp, chat integrations; advanced trend analytics; predictive escalation; admin resolution feedback fed back into training |
+
+Items in the Out of Scope list above are candidates for Phase 2 and Phase 3, prioritised based on business demand.
+
+---
+
+## 11. Key Decisions Summary
 
 | Decision | Choice |
 |----------|--------|
@@ -325,7 +412,7 @@ Configurable per organization:
 
 ---
 
-## 11. Pricing Reference
+## 12. Pricing Reference
 
 ### 11.1 Gemini Multimodal Live API (AI & Voice)
 
