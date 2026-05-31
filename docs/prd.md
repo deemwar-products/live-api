@@ -120,6 +120,12 @@ Admins can create custom roles and assign granular permissions:
 - Top-20 retrieval, relevance threshold 0.5
 - Per-org vector namespace isolation
 
+**Multilingual Embedding Support:**
+- Embedding model must support 100+ languages (e.g., BGE-M3, Jina Embeddings V3)
+- Cross-lingual retrieval: customers can query in any language and retrieve relevant chunks regardless of document language
+- Language detection applied at ingestion and query time; stored as metadata on every vector chunk
+- Language metadata enables filtered retrieval and per-language analytics
+
 **Future:** URL scraping (React-based pages require special handling)
 
 ### 4.2 System Prompt Configuration
@@ -274,6 +280,7 @@ Configurable per organization:
 | User Auth + Org Onboarding | ✅ |
 | Knowledge Upload (File + Manual + API) | ✅ |
 | RAG-based AI responses | ✅ |
+| Multilingual Embedding Support (100+ languages, cross-lingual retrieval) | ✅ |
 | System Prompt (Auto + Edit, platform prompt protected) | ✅ |
 | Greeting Message Configuration | ✅ |
 | Chat + Voice channels | ✅ |
@@ -307,6 +314,7 @@ Configurable per organization:
 | Channels | Voice + Chat (both at launch) |
 | Customer Access | Subdomain + Widget + API |
 | Knowledge | File upload + Manual + API integration |
+| Embedding | Multilingual model (BGE-M3 / Jina V3, 100+ languages, cross-lingual) |
 | MCP | Platform tools (mandatory) + Business tools (future) |
 | Escalation | Queue-based Live / Async Toggle |
 | System Prompt | Auto-generate + Edit + Append only (no override) |
@@ -314,6 +322,42 @@ Configurable per organization:
 | Feedback | LLM Judge with question tagging |
 | Isolation | Strict org-level (no cross-org data access) |
 | Platform Alerting | Email on failures + Credit alerts |
+
+---
+
+## 11. Pricing Reference
+
+### 11.1 Gemini Multimodal Live API (AI & Voice)
+
+Google's real-time, low-latency API for voice, audio, and video interactions — the core AI engine powering this platform. Billed by tokens processed.
+
+> **Important:** Live interactions stream constant data. Audio is charged at **25 tokens/second**, meaning a 2-minute voice call consumes ~3,000 audio input tokens before any output is counted.
+
+**Free Tier (Google AI Studio)**
+
+| Limit | Value |
+|-------|-------|
+| Requests per day | Up to 1,500 (model-dependent, e.g. Gemini 1.5 Flash) |
+| Cost | $0 |
+
+**Paid Tier (Pay-As-You-Go)**
+
+| Token Type | Rate |
+|------------|------|
+| Text Input | $0.075 – $0.35 per 1M tokens |
+| Audio / Video Input | $0.70 – $2.10 per 1M tokens |
+| Output | $0.30 – $1.50 per 1M tokens |
+
+**Cost Estimation Example (per voice conversation):**
+
+| Scenario | Approx. Tokens | Approx. Cost |
+|----------|---------------|--------------|
+| 1-min voice call (audio input only) | ~1,500 audio tokens | ~$0.001 – $0.003 |
+| 3-min voice call + RAG context output | ~4,500 audio + ~500 output tokens | ~$0.004 – $0.010 |
+
+> These are illustrative estimates. Actual costs vary by model tier and conversation complexity.
+
+**Reference:** [Gemini API Pricing — Gemini 2.5 Flash Live Preview](https://ai.google.dev/gemini-api/docs/pricing#gemini-3.1-flash-live-preview)
 
 ---
 
