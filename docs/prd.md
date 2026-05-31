@@ -138,6 +138,8 @@ Admins can create custom roles and assign granular permissions:
 | Auto + Edit | Auto-generated, user can customize/add to platform prompt |
 | Custom Append | User adds instructions that append to platform prompt |
 
+**Auto-Regeneration:** The system prompt automatically refreshes (as a background job) whenever the knowledge base changes — new document uploaded, document updated, or document deleted. Active sessions are not affected; the new prompt applies from the next session. Admins can also trigger regeneration manually at any time.
+
 ### 4.3 Greeting Message (Separate from System Prompt)
 
 Configurable per organization:
@@ -156,6 +158,27 @@ These are platform-level guarantees that define the quality of every customer vo
 | **Page refresh tolerance** | Refreshing the browser does not end the session; conversation resumes within a 30-minute window |
 | **No partial responses** | If interrupted, the AI never delivers an incomplete or incorrect answer — it waits for the customer's full query |
 | **Graceful degradation** | If any backend service is degraded, customers receive clear messaging and are offered escalation rather than a silent failure |
+
+**Customer-Facing Session States:**
+
+The customer interface reflects the real-time state of the conversation at all times.
+
+| State | What It Means |
+|-------|--------------|
+| `Connecting` | Session is initializing |
+| `Listening` | AI is capturing the customer's speech |
+| `Thinking` | AI is processing, searching knowledge base, or calling tools |
+| `Speaking` | AI is delivering its response |
+| `Interrupted` | Customer spoke over the AI; AI has stopped and is listening |
+| `Escalating` | Transferring to a human agent |
+| `Ended` | Session is complete |
+
+**Optional Audio Recording:**
+
+Orgs can choose to enable session audio recording. When enabled:
+- Audio is uploaded to secure storage after the session ends (not during, to avoid latency impact)
+- Recordings are auto-deleted after 30 days (configurable per org)
+- Orgs can disable audio recording entirely if not required
 
 ### 4.5 MCP Tools
 
@@ -202,6 +225,19 @@ The customer is never left in the dark during a handoff. The platform delivers a
 | **Transfer Complete** | Human agent joins via chat or phone based on org configuration |
 
 **Context Handoff Guarantee:** The full conversation transcript, retrieved knowledge, and customer context are automatically passed to the human agent. The customer never has to repeat themselves.
+
+**Escalation Triggers:**
+
+Escalation can be triggered in four ways:
+
+| Trigger | Description |
+|---------|-------------|
+| **Customer request** | Customer explicitly says "talk to a human" or similar |
+| **AI confidence** | AI cannot answer after retries and falls back to escalation |
+| **MCP failure** | A required tool call fails repeatedly |
+| **Live score threshold** | Real-time conversation health score drops below the org-configured threshold (see Live Monitoring in Section 4.8) |
+
+The last trigger means admins can configure how aggressively the platform auto-escalates — tighter thresholds escalate sooner, looser thresholds give the AI more attempts.
 
 ### 4.7 Feedback System (LLM Judge)
 
@@ -262,6 +298,34 @@ Every conversation is automatically tagged by topic. Businesses get these catego
 
 Admins can create additional custom categories and manually re-tag conversations as needed.
 
+**Conversation Resolution Tracking:**
+
+Every session is assigned a resolution outcome, used to calculate true automation effectiveness.
+
+| Status | Meaning |
+|--------|---------|
+| `Resolved by AI` | AI handled the query; customer satisfied |
+| `Resolved by Human` | Escalated and resolved by a human agent |
+| `Unresolved` | Escalated but issue not resolved |
+| `Unknown` | Session ended without a clear outcome |
+
+**Implicit Resolution Rule:** If the same customer contacts support about the same issue within 24 hours of a previous session, that prior session is automatically marked as `Unresolved` — even if it was originally logged as resolved.
+
+**Live Conversation Monitoring:**
+
+Admins can monitor every active conversation in real time from the dashboard. Each conversation is scored continuously and colour-coded:
+
+| Colour | Score Range | Action |
+|--------|-------------|--------|
+| 🟢 Green | 0.70 – 1.00 | Normal — no action needed |
+| 🟡 Yellow | 0.50 – 0.69 | Monitor — flagged on dashboard |
+| 🟠 Orange | 0.30 – 0.49 | At risk — takeover suggested |
+| 🔴 Red | 0.00 – 0.29 | Critical — admin notified, immediate takeover recommended |
+
+Admins can click any live conversation to view the full real-time transcript and per-signal score breakdown. The Red threshold and auto-escalation behaviour are configurable per org.
+
+**Human Takeover:** When an admin takes over a flagged conversation, the customer hears: *"A support specialist has reviewed our conversation and would like to help."* The agent receives the full transcript, flagged reason, and a summary of what the AI tried — no context is lost.
+
 **Platform-Level Analytics:**
 - Cross-org performance overview
 - Credit/usage monitoring
@@ -283,23 +347,34 @@ Admins can create additional custom categories and manually re-tag conversations
 
 ---
 
-## 6. Alerting
+## 6. Notifications & Alerting
 
-### 6.1 Platform Alerting (Internal)
+### 6.1 Notification Events
 
-**Alert triggers:**
-| Trigger | Action |
-|---------|--------|
-| Service failures | Email to platform team |
-| High error rates | Email to platform team |
-| Escalation channel failure | Email to platform team |
-| **Low API credits** | Email to platform team (via Credit Alert MCP) |
+Every significant platform event triggers a notification to the right person through the right channel.
 
-### 6.2 Business Alerting (External)
+| Event | Who Gets Notified | Channels |
+|-------|------------------|---------|
+| API credit usage > 50% | Super Admin | In-app, Email |
+| API credit usage > 80% | Super Admin | In-app, Email (urgent) |
+| API credit usage > 95% | Super Admin | In-app, Email, SMS |
+| API key pool failure | Super Admin | In-app, Email |
+| Service failure / high error rates | Super Admin | In-app, Email |
+| MCP server down | Org Admin | In-app, Email |
+| Escalation triggered | Org Agents | In-app, configurable channel |
+| Escalation threshold hit | Org Admin | In-app, Email |
+| Document processed successfully | Org Admin | In-app |
+| Knowledge gap identified | Content Manager | In-app, Email |
+| System degraded | Super Admin | In-app, Email |
 
-- Escalation notifications to org agents
-- Knowledge gap alerts to content managers
-- Usage/cost alerts (future)
+### 6.2 Notification Channels
+
+| Channel | Configurable | Notes |
+|---------|-------------|-------|
+| In-app | Always on | Unread badge counter visible in dashboard |
+| Email | On/off, digest frequency configurable | |
+| SMS | Critical events only | |
+| Slack / Teams | Yes — webhook URL per org | |
 
 ---
 
@@ -321,10 +396,13 @@ Admins can create additional custom categories and manually re-tag conversations
 
 | Metric | Target |
 |--------|--------|
-| Automation rate | 80-90% |
+| Automation rate | 80–90% |
 | Escalation rate | <20% |
 | AI accuracy | Judge scores >80% |
-| Response latency | <2 seconds |
+| AI response latency | <2 seconds end-to-end |
+| Voice audio latency | <500ms (microphone to speaker) |
+| Session initialization | <2 seconds |
+| Session resumption | <5 seconds |
 | Customer satisfaction | Composite score >70 (Good band) |
 
 **Additional KPIs:**
@@ -332,19 +410,33 @@ Admins can create additional custom categories and manually re-tag conversations
 - Knowledge base coverage (% of FAQ topics covered)
 - Escalation feedback loop speed
 
-### 8.2 Platform Capacity Commitments
+### 8.2 Platform Capacity & SLA
 
-These are the guaranteed capacity baselines the platform is designed to support at launch.
+**Availability**
 
-| Commitment | Capacity |
-|------------|----------|
-| **Concurrent voice calls** | 100 per org / 1,000 platform-wide |
-| **Document processing** | 1,000 documents per day per org |
-| **Knowledge base searchable** | Within 5 minutes of document upload |
-| **Voice response latency** | <2 seconds end-to-end |
-| **API requests** | 10,000 requests/min per org |
+| Level | Target |
+|-------|--------|
+| Platform uptime | 99.9% |
+| Max degraded time before escalation | <1 hour |
 
-Capacity scales automatically with usage. Per-org limits are configurable by the platform team.
+**Capacity Commitments (MVP → Scale)**
+
+| Metric | MVP | Scale |
+|--------|-----|-------|
+| Concurrent voice calls | 50 | 500 |
+| Organizations supported | 10 | 100+ |
+| Documents per org | 100 | 10,000 |
+| Sessions per day (platform-wide) | 1,000 | 50,000 |
+| Knowledge base searchable after upload | Within 5 min | Within 5 min |
+
+**Security Requirements**
+
+| Requirement | Policy |
+|-------------|--------|
+| Multi-factor authentication | Required for Super Admin; recommended for Org Admin |
+| Encryption at rest | All data — database, file storage, cache |
+| Encryption in transit | TLS 1.3 |
+| Audit logging | All admin actions logged with 1-year retention |
 
 ---
 
