@@ -269,12 +269,16 @@ Rationale: Hard multi-tenancy (separate DB instances per org) adds operational c
 | **Chunking Method** | Semantic (sentence-aware) | Prefer splitting on sentence boundaries over arbitrary cuts |
 | **Min Chunk Size** | 100 tokens | Discard chunks below threshold (likely incomplete) |
 | **Max Chunk Size** | 1024 tokens | Split larger chunks to prevent context overflow |
+| **Language-Aware Splitting** | Detect language before chunking | Use punctuation boundaries for European languages; semantic splitting for CJK (no space-based word boundaries) |
 
 ### 4.3 Embedding Pipeline
 
 | Parameter | Value |
 |-----------|-------|
-| **Model** | TBD (recommend text-embedding-3-small or Vertex AI) |
+| **Model** | BGE-M3 (primary) or Jina Embeddings V3 — both support 100+ languages and cross-lingual retrieval |
+| **Dimensions** | 1024 (BGE-M3 default); supports Matryoshka truncation to 768 if storage-constrained |
+| **Language Detection** | fastText-based at ingestion time; language code stored as vector metadata |
+| **Language Metadata** | Every chunk stores `language: "en"`, `"es"`, etc. for filtered retrieval and analytics |
 | **Batch Size** | 100 chunks per API call |
 | **Processing** | Async (background job queue) |
 | **SLA** | Documents searchable within 5 minutes of upload |
@@ -326,6 +330,71 @@ Query ──▶ Intent Classification ──▶ Query Embedding
 **"No Relevant Context" Path:**
 - If all retrieved chunks < 0.5, agent should NOT fabricate answer
 - Trigger escalation or "I don't have information about that" response
+
+### 4.6 Multilingual Retrieval Strategy
+
+**Embedding Model:** BGE-M3 or Jina Embeddings V3 — both map all languages into a shared vector space, enabling cross-lingual retrieval without a translation step.
+
+**Query Flow (Multilingual):**
+
+```
+Customer Query (any language)
+        │
+        ▼
+┌─────────────────────┐
+│ Language Detection  │  ← fastText; detect language code
+│ (fastText)          │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Query Embedding     │  ← Multilingual model (BGE-M3/Jina V3)
+│ (same model for all │
+│  languages)         │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────────────────────────────────┐
+│ Vector Search with Language Filtering           │
+│  - Primary: filter chunks by detected language  │
+│  - Fallback: cross-lingual search (all langs)   │
+│    if primary returns < 3 results               │
+└──────────┬──────────────────────────────────────┘
+           │
+           ▼
+     Top-K Chunks → Relevance Gate → LLM Prompt
+```
+
+**Language Filtering Strategy:**
+
+| Scenario | Behavior |
+|----------|----------|
+| Query language matches doc language | Filter by language; standard retrieval |
+| Query in Language A, docs in Language B | Cross-lingual retrieval via shared embedding space; expect ~20-30% accuracy reduction |
+| Low result count (<3 after language filter) | Fallback to cross-lingual search across all languages |
+| Undetected / ambiguous language | Default to cross-lingual search |
+
+**Known Tradeoffs:**
+
+| Tradeoff | Detail |
+|----------|--------|
+| Accuracy vs. monolingual | Multilingual models lose 2-8 NDCG points vs. English-only on English queries; accepted cost |
+| Cross-lingual degradation | 20-30% retrieval accuracy loss in cross-lingual scenarios; mitigated by escalation fallback |
+| Latency overhead | Multilingual models add ~10-25ms per embedding vs. single-language models; within 50ms Vector DB SLA |
+| Low-resource languages | Languages with <10M speakers may degrade; monitor per-language hit rates and escalation rates |
+
+**Metadata Schema per Vector Chunk:**
+
+```json
+{
+  "org_id": "uuid",
+  "doc_id": "uuid",
+  "chunk_seq": 3,
+  "language": "es",
+  "domain_tag": "billing",
+  "created_at": "ISO8601"
+}
+```
 
 ---
 
@@ -762,7 +831,7 @@ Response:
 | ID | Decision | Options | Recommendation |
 |----|----------|---------|----------------|
 | **AD-001** | Vector DB Provider | Pinecone / Weaviate / Chroma | Weaviate (open-source, hybrid search) |
-| **AD-002** | Embedding Model | OpenAI text-embedding-3 / Vertex AI | text-embedding-3-small (cost-effective) |
+| **AD-002** | Embedding Model | OpenAI text-embedding-3 / BGE-M3 / Jina Embeddings V3 | BGE-M3 (open-source, 100+ languages, cross-lingual, 1024-dim) — Jina V3 as managed alternative |
 | **AD-003** | WebRTC Provider | Twilio / Daily.co / Self-hosted | Daily.co (simpler integration) |
 | **AD-004** | Analytics DB | TimescaleDB / ClickHouse | TimescaleDB (simpler, good for metrics) |
 | **AD-005** | Orchestration | Kafka / Redis Streams / SQS | Redis Streams (simpler for our scale) |
