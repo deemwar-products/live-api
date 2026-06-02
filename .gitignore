@@ -1,9 +1,27 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Tool / agent artifacts
 _bmad/
 _bmad-output/
-
 .agents/
 .claude/
-
-.github/
-
 skills-lock.json
+.github/agents/
+
+# Per-app ignores (Node / Vite)
+# apps/ui/.gitignore handles apps/ui/node_modules and apps/ui/dist

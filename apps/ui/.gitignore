@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+*.local
+
+# Vite cache
+.vite/
+
+# TS build info
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local

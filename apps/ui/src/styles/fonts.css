@@ -1,0 +1,47 @@
+@font-face {
+  font-family: "Stack Sans Notch";
+  font-style: normal;
+  font-weight: 200;
+  font-display: swap;
+  src: url("/fonts/StackSansNotch-ExtraLight.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Stack Sans Notch";
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url("/fonts/StackSansNotch-Light.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Stack Sans Notch";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/StackSansNotch-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Stack Sans Notch";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/StackSansNotch-Medium.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Stack Sans Notch";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/StackSansNotch-SemiBold.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Stack Sans Notch";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/StackSansNotch-Bold.ttf") format("truetype");
+}
