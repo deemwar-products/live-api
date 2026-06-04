@@ -1,3 +1,6 @@
+.env
+server/.env
+
 _bmad/
 _bmad-output/
 

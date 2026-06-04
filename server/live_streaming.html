@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Gemini Live API</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ── Header ── */
+  .header {
+    background: #1a73e8; color: white; padding: 12px 20px;
+    display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  }
+  .header-title { font-size: 17px; font-weight: 500; flex: 1; }
+
+  /* Mode toggle */
+  .mode-toggle { display: flex; background: rgba(255,255,255,0.15); border-radius: 8px; padding: 3px; gap: 3px; }
+  .mode-btn {
+    padding: 6px 18px; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 13px; font-weight: 500; color: rgba(255,255,255,0.75); background: transparent;
+    transition: all 0.2s;
+  }
+  .mode-btn.active { background: white; color: #1a73e8; }
+
+  /* Connection status */
+  .conn-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: rgba(255,255,255,0.8); }
+  .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #ea4335; transition: background 0.3s; }
+  .conn-dot.connected { background: #34a853; }
+
+  /* ── Panels ── */
+  .panel { flex: 1; display: none; flex-direction: column; overflow: hidden; }
+  .panel.active { display: flex; }
+
+  /* ════════════════════════════════
+     TEXT MODE
+  ════════════════════════════════ */
+  .text-chat { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .text-empty { text-align: center; color: #999; margin: auto; font-size: 14px; }
+
+  .bubble-row { display: flex; }
+  .bubble-row.user { justify-content: flex-end; }
+  .bubble-row.gemini { justify-content: flex-start; }
+
+  .bubble {
+    max-width: 65%; padding: 10px 14px; border-radius: 18px;
+    font-size: 14px; line-height: 1.5; word-break: break-word;
+  }
+  .bubble-row.user .bubble { background: #1a73e8; color: white; border-bottom-right-radius: 4px; }
+  .bubble-row.gemini .bubble { background: white; color: #1a1a1a; border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+
+  .typing-dots { display: flex; gap: 4px; padding: 12px 14px; background: white; border-radius: 18px; border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); align-self: flex-start; }
+  .typing-dots span { width: 7px; height: 7px; border-radius: 50%; background: #bbb; animation: tdot 1.2s infinite; }
+  .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes tdot { 0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-6px)} }
+
+  .text-input-bar {
+    padding: 12px 16px; background: white; border-top: 1px solid #e8eaed;
+    display: flex; gap: 10px; align-items: flex-end; flex-shrink: 0;
+  }
+  .text-input {
+    flex: 1; border: 1px solid #dadce0; border-radius: 24px; padding: 10px 16px;
+    font-size: 14px; resize: none; outline: none; max-height: 120px; overflow-y: auto;
+    transition: border-color 0.2s; font-family: inherit; line-height: 1.4;
+  }
+  .text-input:focus { border-color: #1a73e8; }
+  .send-btn {
+    width: 42px; height: 42px; border-radius: 50%; border: none;
+    background: #1a73e8; color: white; cursor: pointer; font-size: 18px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    transition: background 0.2s; align-self: flex-end;
+  }
+  .send-btn:hover { background: #1558b0; }
+  .send-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+  /* ════════════════════════════════
+     AUDIO MODE
+  ════════════════════════════════ */
+  .audio-panel { background: #0d1117; flex: 1; display: none; flex-direction: column; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+  .audio-panel.active { display: flex; }
+
+  /* Background ambient glow */
+  .audio-bg-glow {
+    position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(26,115,232,0.08) 0%, transparent 70%);
+    transition: opacity 0.5s;
+  }
+  .audio-bg-glow.listening { background: radial-gradient(ellipse at center, rgba(234,67,53,0.12) 0%, transparent 70%); }
+  .audio-bg-glow.speaking { background: radial-gradient(ellipse at center, rgba(52,168,83,0.12) 0%, transparent 70%); }
+
+  /* Mic orb */
+  .mic-orb-wrap { position: relative; display: flex; align-items: center; justify-content: center; margin-bottom: 32px; }
+  .mic-ring {
+    position: absolute; border-radius: 50%; border: 2px solid rgba(234,67,53,0.3);
+    animation: ring-pulse 2s ease-out infinite; opacity: 0;
+  }
+  .mic-ring.r1 { width: 140px; height: 140px; animation-delay: 0s; }
+  .mic-ring.r2 { width: 180px; height: 180px; animation-delay: 0.5s; }
+  .mic-ring.r3 { width: 220px; height: 220px; animation-delay: 1s; }
+  .mic-ring { display: none; }
+  @keyframes ring-pulse { 0%{transform:scale(0.8);opacity:0.6} 100%{transform:scale(1);opacity:0} }
+
+  .mic-orb {
+    width: 100px; height: 100px; border-radius: 50%; border: none; cursor: pointer;
+    background: linear-gradient(145deg, #2a2a3e, #1a1a2e);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 38px; transition: transform 0.15s, box-shadow 0.2s;
+    position: relative; z-index: 1;
+  }
+  .mic-orb:hover { transform: scale(1.05); }
+  .mic-orb.listening {
+    background: linear-gradient(145deg, #c0392b, #ea4335);
+    box-shadow: 0 4px 30px rgba(234,67,53,0.5), inset 0 1px 0 rgba(255,255,255,0.1);
+  }
+  .mic-orb.speaking {
+    background: linear-gradient(145deg, #27ae60, #34a853);
+    box-shadow: 0 4px 30px rgba(52,168,83,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+    animation: speaking-pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes speaking-pulse { 0%,100%{transform:scale(1)}50%{transform:scale(1.04)} }
+
+  /* Audio waveform (shown while listening) */
+  .waveform { display: flex; align-items: center; gap: 4px; height: 40px; margin-bottom: 12px; opacity: 0; transition: opacity 0.3s; }
+  .waveform.visible { opacity: 1; }
+  .waveform .bar { width: 4px; background: #ea4335; border-radius: 2px; animation: wave-bar 0.8s ease-in-out infinite; }
+  .waveform .bar:nth-child(1){height:8px;animation-delay:0s}
+  .waveform .bar:nth-child(2){height:16px;animation-delay:0.1s}
+  .waveform .bar:nth-child(3){height:28px;animation-delay:0.2s}
+  .waveform .bar:nth-child(4){height:20px;animation-delay:0.15s}
+  .waveform .bar:nth-child(5){height:32px;animation-delay:0.25s}
+  .waveform .bar:nth-child(6){height:20px;animation-delay:0.1s}
+  .waveform .bar:nth-child(7){height:8px;animation-delay:0s}
+  @keyframes wave-bar { 0%,100%{transform:scaleY(0.5)}50%{transform:scaleY(1.5)} }
+
+  .audio-status { font-size: 14px; color: #888; margin-bottom: 8px; min-height: 20px; transition: color 0.3s; letter-spacing: 0.3px; }
+  .audio-status.listening { color: #ea4335; }
+  .audio-status.speaking { color: #34a853; }
+  .audio-hint { font-size: 12px; color: #555; }
+
+  /* Live transcript feed */
+  .live-transcript { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); width: 500px; max-width: 90vw; max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 0 8px; }
+  .lt-line { font-size: 13px; padding: 6px 12px; border-radius: 12px; animation: fade-in 0.3s ease; }
+  .lt-line.user { background: rgba(26,115,232,0.15); color: #90b8f8; align-self: flex-end; max-width: 80%; }
+  .lt-line.gemini { background: rgba(52,168,83,0.12); color: #7dd4a0; align-self: flex-start; max-width: 80%; }
+  @keyframes fade-in { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+  /* Audio mode top toolbar */
+  .audio-toolbar {
+    position: absolute; top: 16px; right: 16px;
+    display: flex; gap: 8px;
+  }
+  .toolbar-btn {
+    padding: 7px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.7);
+    cursor: pointer; font-size: 12px; font-weight: 500; transition: all 0.2s;
+  }
+  .toolbar-btn:hover { background: rgba(255,255,255,0.12); color: white; }
+  .toolbar-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* ── History Modal ── */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 100; align-items: flex-end; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: white; border-radius: 16px 16px 0 0; width: 100%; max-width: 640px;
+    max-height: 75vh; display: flex; flex-direction: column;
+    animation: slide-up 0.3s ease;
+  }
+  @keyframes slide-up { from{transform:translateY(100%)} to{transform:translateY(0)} }
+  .modal-header {
+    padding: 16px 20px; border-bottom: 1px solid #f0f0f0;
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+  }
+  .modal-header h2 { font-size: 16px; font-weight: 600; color: #1a1a1a; }
+  .modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: #888; padding: 2px 6px; border-radius: 4px; }
+  .modal-close:hover { background: #f5f5f5; }
+  .modal-body { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .history-empty { color: #999; text-align: center; margin: 24px 0; font-size: 14px; }
+  .history-entry { display: flex; flex-direction: column; }
+  .history-entry.user { align-items: flex-end; }
+  .history-entry.gemini { align-items: flex-start; }
+  .history-label { font-size: 11px; color: #999; margin-bottom: 3px; }
+  .history-bubble { padding: 10px 14px; border-radius: 16px; font-size: 14px; line-height: 1.5; max-width: 75%; }
+  .history-entry.user .history-bubble { background: #e8f0fe; color: #1a56c4; border-bottom-right-radius: 4px; }
+  .history-entry.gemini .history-bubble { background: #f1f3f4; color: #1a1a1a; border-bottom-left-radius: 4px; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <span style="font-size:20px">✦</span>
+  <span class="header-title">Gemini Live</span>
+
+  <div class="mode-toggle">
+    <button class="mode-btn active" id="btn-text" onclick="switchMode('text')">Text</button>
+    <button class="mode-btn" id="btn-audio" onclick="switchMode('audio')">Audio</button>
+  </div>
+
+  <div class="conn-status">
+    <div class="conn-dot" id="conn-dot"></div>
+    <span id="conn-label">Disconnected</span>
+  </div>
+</div>
+
+<!-- TEXT MODE panel -->
+<div class="panel active" id="panel-text">
+  <div class="text-chat" id="text-chat">
+    <div class="text-empty" id="text-empty">Send a message to start the conversation</div>
+  </div>
+  <div id="typing-row" style="padding: 0 20px 8px; display:none">
+    <div class="typing-dots"><span></span><span></span><span></span></div>
+  </div>
+  <div class="text-input-bar">
+    <textarea class="text-input" id="text-input" rows="1" placeholder="Type a message…"></textarea>
+    <button class="send-btn" id="send-btn" onclick="sendText()" disabled>↑</button>
+  </div>
+</div>
+
+<!-- AUDIO MODE panel -->
+<div class="audio-panel" id="panel-audio">
+  <div class="audio-bg-glow" id="audio-glow"></div>
+
+  <div class="audio-toolbar">
+    <button class="toolbar-btn" id="history-btn" onclick="openHistory()" disabled>📋 View History</button>
+    <button class="toolbar-btn" id="end-btn" onclick="endAudioSession()" disabled>End</button>
+  </div>
+
+  <div class="waveform" id="waveform">
+    <div class="bar"></div><div class="bar"></div><div class="bar"></div>
+    <div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div>
+  </div>
+
+  <div class="mic-orb-wrap">
+    <div class="mic-ring r1" id="ring1"></div>
+    <div class="mic-ring r2" id="ring2"></div>
+    <div class="mic-ring r3" id="ring3"></div>
+    <button class="mic-orb" id="mic-orb" onclick="toggleRecording()">🎤</button>
+  </div>
+
+  <div class="audio-status" id="audio-status">Tap the mic to start</div>
+  <div class="audio-hint" id="audio-hint">Speak naturally — Gemini will respond in real time</div>
+
+  <div class="live-transcript" id="live-transcript"></div>
+</div>
+
+<!-- History Modal -->
+<div class="modal-overlay" id="history-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Conversation History</h2>
+      <button class="modal-close" onclick="closeHistory()">✕</button>
+    </div>
+    <div class="modal-body" id="history-body">
+      <div class="history-empty">No conversation yet</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var WS_BASE = '{{.}}';  // ws://host/live
+
+  var currentMode = 'text';
+  var ws = null;
+  var isRecording = false;
+  var processor = null;
+
+  var inputSampleRate  = 16000;
+  var outputSampleRate = 24000;
+
+  // Web Audio API playback scheduler (gapless, autoplay-safe)
+  var playbackCtx = null;
+  var nextPlayTime = 0;
+  var scheduledSources = 0;
+  var activeSources = [];   // AudioBufferSourceNodes in flight — stopped on interrupt
+
+  // Conversation history (audio mode)
+  var conversationHistory = [];  // [{role, text}]
+  var audioChunksSent = [];
+  var audioChunksReceived = [];
+
+  // ── Connection status ──────────────────────────────────────
+  function setConnected(ok) {
+    document.getElementById('conn-dot').className = 'conn-dot' + (ok ? ' connected' : '');
+    document.getElementById('conn-label').textContent = ok ? 'Connected' : 'Disconnected';
+    document.getElementById('send-btn').disabled = !ok;
+  }
+
+  // ── Mode switching ─────────────────────────────────────────
+  window.switchMode = function(mode) {
+    if (mode === currentMode) return;
+    currentMode = mode;
+
+    document.getElementById('btn-text').className  = 'mode-btn' + (mode === 'text'  ? ' active' : '');
+    document.getElementById('btn-audio').className = 'mode-btn' + (mode === 'audio' ? ' active' : '');
+    document.getElementById('panel-text').className  = 'panel'       + (mode === 'text'  ? ' active' : '');
+    document.getElementById('panel-audio').className = 'audio-panel' + (mode === 'audio' ? ' active' : '');
+
+    // Reconnect with correct config
+    if (ws) { ws.close(); ws = null; }
+    stopRecording();
+    openWs(mode);
+  };
+
+  // ── WebSocket ──────────────────────────────────────────────
+  function openWs(mode) {
+    ws = new WebSocket(WS_BASE + '?mode=' + mode);
+
+    ws.onopen = function () {
+      setConnected(true);
+      if (mode === 'audio') {
+        document.getElementById('end-btn').disabled = false;
+      }
+    };
+
+    ws.onclose = function () {
+      setConnected(false);
+      isRecording = false;
+      setAudioState('idle');
+      document.getElementById('end-btn').disabled = true;
+    };
+
+    ws.onerror = function () { setConnected(false); };
+
+    ws.onmessage = function (evt) {
+      var data = JSON.parse(evt.data);
+      if (currentMode === 'text') { handleTextMessage(data); }
+      else                        { handleAudioMessage(data); }
+    };
+  }
+
+  // ── TEXT MODE ──────────────────────────────────────────────
+  function handleTextMessage(data) {
+    if (!data.serverContent) return;
+    var sc = data.serverContent;
+
+    if (sc.modelTurn && sc.modelTurn.parts) {
+      sc.modelTurn.parts.forEach(function (p) {
+        if (p.text) appendTextBubble('gemini', p.text);
+      });
+    }
+
+    if (sc.turnComplete) {
+      document.getElementById('typing-row').style.display = 'none';
+    } else if (sc.modelTurn) {
+      document.getElementById('typing-row').style.display = 'block';
+    }
+  }
+
+  function appendTextBubble(role, text) {
+    var chat = document.getElementById('text-chat');
+    var empty = document.getElementById('text-empty');
+    if (empty) empty.remove();
+
+    // Merge consecutive gemini chunks into the last bubble
+    var last = chat.lastElementChild;
+    if (role === 'gemini' && last && last.classList.contains('bubble-row') && last.classList.contains('gemini')) {
+      last.querySelector('.bubble').textContent += text;
+      chat.scrollTop = chat.scrollHeight;
+      return;
+    }
+
+    var row = document.createElement('div');
+    row.className = 'bubble-row ' + role;
+    var bub = document.createElement('div');
+    bub.className = 'bubble';
+    bub.textContent = text;
+    row.appendChild(bub);
+    chat.appendChild(row);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  window.sendText = function () {
+    var input = document.getElementById('text-input');
+    var text = input.value.trim();
+    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+    appendTextBubble('user', text);
+    input.value = '';
+    input.style.height = '';
+    document.getElementById('typing-row').style.display = 'block';
+
+    ws.send(JSON.stringify({
+      turns: [{ role: 'user', parts: [{ text: text }] }],
+      turnComplete: true
+    }));
+  };
+
+  // Enter to send (Shift+Enter for newline)
+  document.getElementById('text-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.sendText(); }
+  });
+
+  // Auto-resize textarea
+  document.getElementById('text-input').addEventListener('input', function () {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+  });
+
+  // ── AUDIO MODE ─────────────────────────────────────────────
+  function handleAudioMessage(data) {
+    if (!data.serverContent) return;
+    var sc = data.serverContent;
+
+    // User speech → text
+    if (sc.inputTranscription && sc.inputTranscription.text) {
+      var txt = sc.inputTranscription.text.trim();
+      if (txt) {
+        addLiveTranscriptLine('user', txt);
+        conversationHistory.push({ role: 'user', text: txt });
+        updateHistoryBtn();
+      }
+    }
+
+    // Gemini response → text
+    if (sc.outputTranscription && sc.outputTranscription.text) {
+      var txt = sc.outputTranscription.text.trim();
+      if (txt) {
+        addLiveTranscriptLine('gemini', txt);
+        conversationHistory.push({ role: 'gemini', text: txt });
+        updateHistoryBtn();
+      }
+    }
+
+    // User interrupted Gemini mid-response — stop audio immediately
+    if (sc.interrupted) {
+      stopPlayback();
+      setAudioState('listening');
+      return;
+    }
+
+    // Gemini audio chunks — schedule immediately via Web Audio API
+    if (sc.modelTurn && sc.modelTurn.parts) {
+      sc.modelTurn.parts.forEach(function (p) {
+        if (p.inlineData && p.inlineData.mimeType.startsWith('audio/pcm')) {
+          var chunk = b64ToBytes(p.inlineData.data);
+          audioChunksReceived.push(chunk);
+          setAudioState('speaking');
+          scheduleAudioChunk(chunk);
+        }
+      });
+    }
+
+    if (sc.turnComplete) {
+      audioChunksReceived = [];
+    }
+  }
+
+  function setAudioState(state) {
+    var orb    = document.getElementById('mic-orb');
+    var status = document.getElementById('audio-status');
+    var glow   = document.getElementById('audio-glow');
+    var wf     = document.getElementById('waveform');
+    var rings  = [document.getElementById('ring1'), document.getElementById('ring2'), document.getElementById('ring3')];
+
+    orb.className = 'mic-orb' + (state === 'listening' ? ' listening' : state === 'speaking' ? ' speaking' : '');
+    glow.className = 'audio-bg-glow' + (state === 'listening' ? ' listening' : state === 'speaking' ? ' speaking' : '');
+    wf.className = 'waveform' + (state === 'listening' ? ' visible' : '');
+
+    rings.forEach(function (r) { r.style.display = state === 'listening' ? 'block' : 'none'; });
+
+    if (state === 'listening') {
+      status.textContent = 'Listening…';
+      status.className = 'audio-status listening';
+      orb.textContent = '🎤';
+    } else if (state === 'speaking') {
+      status.textContent = 'Gemini is speaking…';
+      status.className = 'audio-status speaking';
+      orb.textContent = '🔊';
+    } else {
+      status.textContent = isRecording ? 'Listening…' : 'Tap the mic to start';
+      status.className = 'audio-status';
+      orb.textContent = '🎤';
+    }
+  }
+
+  function addLiveTranscriptLine(role, text) {
+    var feed = document.getElementById('live-transcript');
+    var line = document.createElement('div');
+    line.className = 'lt-line ' + role;
+    line.textContent = (role === 'user' ? 'You: ' : 'Gemini: ') + text;
+    feed.appendChild(line);
+    // Keep last 6 lines visible
+    while (feed.children.length > 6) feed.removeChild(feed.firstChild);
+    feed.scrollTop = feed.scrollHeight;
+  }
+
+  function updateHistoryBtn() {
+    document.getElementById('history-btn').disabled = conversationHistory.length === 0;
+  }
+
+  window.toggleRecording = function () {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (isRecording) { stopRecording(); }
+    else             { startRecording(); }
+  };
+
+  // ── Web Audio playback ─────────────────────────────────────
+  function getPlaybackCtx() {
+    if (!playbackCtx) {
+      playbackCtx = new AudioContext({ sampleRate: outputSampleRate });
+    }
+    if (playbackCtx.state === 'suspended') playbackCtx.resume();
+    return playbackCtx;
+  }
+
+  function scheduleAudioChunk(pcmBytes) {
+    var ctx = getPlaybackCtx();
+    var samples = pcmBytes.length / 2;  // 16-bit PCM = 2 bytes per sample
+    var buf = ctx.createBuffer(1, samples, outputSampleRate);
+    var channel = buf.getChannelData(0);
+    var view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+    for (var i = 0; i < samples; i++) {
+      channel[i] = view.getInt16(i * 2, true) / 32768.0;
+    }
+    var source = ctx.createBufferSource();
+    source.buffer = buf;
+    source.connect(ctx.destination);
+    // Schedule right after previous chunk — never overlap, never gap
+    var when = Math.max(ctx.currentTime + 0.02, nextPlayTime);
+    source.start(when);
+    nextPlayTime = when + buf.duration;
+    scheduledSources++;
+    activeSources.push(source);
+    source.onended = function () {
+      scheduledSources--;
+      activeSources = activeSources.filter(function (s) { return s !== source; });
+      if (scheduledSources === 0 && !isRecording) setAudioState('idle');
+    };
+  }
+
+  // Cancel all in-flight audio immediately (called on interrupt)
+  function stopPlayback() {
+    activeSources.forEach(function (s) { try { s.stop(); } catch (_) {} });
+    activeSources = [];
+    scheduledSources = 0;
+    nextPlayTime = 0;
+  }
+
+  function startRecording() {
+    // Unlock AudioContext on this user gesture so scheduled playback isn't blocked
+    getPlaybackCtx();
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      var ctx = new AudioContext({ sampleRate: inputSampleRate });
+      var src = ctx.createMediaStreamSource(stream);
+      processor = ctx.createScriptProcessor(1024, 1, 1);
+      processor.onaudioprocess = function (e) {
+        var pcm = float32ToInt16(e.inputBuffer.getChannelData(0));
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          audioChunksSent.push(new Uint8Array(pcm.buffer));
+          ws.send(JSON.stringify({ audio: { data: toBase64(pcm.buffer), mimeType: 'audio/pcm' } }));
+        }
+      };
+      src.connect(processor);
+      processor.connect(ctx.destination);
+      isRecording = true;
+      setAudioState('listening');
+    });
+  }
+
+  function stopRecording() {
+    if (processor) { processor.disconnect(); processor = null; }
+    isRecording = false;
+    if (scheduledSources === 0) setAudioState('idle');
+  }
+
+  window.endAudioSession = function () {
+    stopRecording();
+    if (ws) { ws.close(); ws = null; }
+    setAudioState('idle');
+    if (conversationHistory.length > 0) openHistory();
+  };
+
+  // ── History Modal ──────────────────────────────────────────
+  window.openHistory = function () {
+    var body = document.getElementById('history-body');
+    body.innerHTML = '';
+    if (conversationHistory.length === 0) {
+      body.innerHTML = '<div class="history-empty">No conversation recorded yet</div>';
+    } else {
+      conversationHistory.forEach(function (entry) {
+        var el = document.createElement('div');
+        el.className = 'history-entry ' + entry.role;
+        var label = document.createElement('div');
+        label.className = 'history-label';
+        label.textContent = entry.role === 'user' ? 'You' : 'Gemini';
+        var bub = document.createElement('div');
+        bub.className = 'history-bubble';
+        bub.textContent = entry.text;
+        el.appendChild(label);
+        el.appendChild(bub);
+        body.appendChild(el);
+      });
+    }
+    document.getElementById('history-modal').className = 'modal-overlay open';
+  };
+
+  window.closeHistory = function () {
+    document.getElementById('history-modal').className = 'modal-overlay';
+  };
+
+  // Close modal on backdrop click
+  document.getElementById('history-modal').addEventListener('click', function (e) {
+    if (e.target === this) closeHistory();
+  });
+
+  // ── Audio utilities ────────────────────────────────────────
+  function merge(arrays) {
+    var n = arrays.reduce(function(a,e){return a+e.length;},0);
+    var out = new Uint8Array(n), off = 0;
+    arrays.forEach(function(a){out.set(a,off);off+=a.length;});
+    return out;
+  }
+
+  function b64ToBytes(b64) {
+    var bin = atob(b64), a = new Uint8Array(bin.length);
+    for (var i=0;i<bin.length;i++) a[i]=bin.charCodeAt(i);
+    return a;
+  }
+
+  function float32ToInt16(f) {
+    var o = new Int16Array(f.length);
+    for (var i=0;i<f.length;i++) o[i]=Math.max(-32768,Math.min(32767,f[i]*32768));
+    return o;
+  }
+
+  function toBase64(buf) {
+    var b='', a=new Uint8Array(buf);
+    for (var i=0;i<a.length;i++) b+=String.fromCharCode(a[i]);
+    return btoa(b);
+  }
+
+  // ── Boot ──────────────────────────────────────────────────
+  openWs('text');
+})();
+</script>
+</body>
+</html>
