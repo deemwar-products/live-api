@@ -1,13 +1,24 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { LandingPage } from "@/pages/landing-page";
+import { AuthPage } from "@/pages/auth-page";
+import { ConsolePage } from "@/pages/console";
+import { OnboardingPage } from "@/pages/console/onboarding";
 import { ThemeProvider } from "@/lib/use-theme";
 import "@/styles/index.css";
 
 function App() {
   return (
     <ThemeProvider>
-      <LandingPage />
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/auth" element={<AuthPage />} />
+          <Route path="/console" element={<ConsolePage />} />
+          <Route path="/console/onboarding" element={<OnboardingPage />} />
+        </Routes>
+      </BrowserRouter>
     </ThemeProvider>
   );
 }
