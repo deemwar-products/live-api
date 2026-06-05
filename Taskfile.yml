@@ -1,0 +1,60 @@
+version: '3'
+
+dotenv:
+  - server/.env
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  run:
+    desc: Run the Gemini Live API server (loads server/.env automatically)
+    dir: server
+    cmds:
+      - go run main.go
+    env:
+      GEMINI_API_KEY: '{{.GEMINI_API_KEY}}'
+
+  build:
+    desc: Build the server binary into server/bin/server
+    dir: server
+    cmds:
+      - mkdir -p bin
+      - go build -o bin/server main.go
+    generates:
+      - server/bin/server
+
+  start:
+    desc: Build then run the compiled binary
+    deps: [build]
+    dir: server
+    cmds:
+      - ./bin/server
+    env:
+      GEMINI_API_KEY: '{{.GEMINI_API_KEY}}'
+
+  clean:
+    desc: Remove compiled binary
+    dir: server
+    cmds:
+      - rm -rf bin/
+
+  tidy:
+    desc: Tidy Go module dependencies
+    dir: server
+    cmds:
+      - go mod tidy
+
+  fmt:
+    desc: Format Go source files
+    dir: server
+    cmds:
+      - gofmt -w .
+
+  vet:
+    desc: Run go vet
+    dir: server
+    cmds:
+      - go vet ./...

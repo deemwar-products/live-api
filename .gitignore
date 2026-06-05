@@ -1,5 +1,7 @@
 .env
 server/.env
+server/bin/
+server/server
 
 _bmad/
 _bmad-output/
