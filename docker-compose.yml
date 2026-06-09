@@ -1,0 +1,35 @@
+services:
+  api:
+    build:
+      context: apps/api
+    command: ./api
+    ports:
+      - "8080:8080"
+    environment:
+      - MODE=api
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DB_PATH=/data/rag.db
+    volumes:
+      - api_data:/data
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: apps/worker
+    command: ./worker
+    environment:
+      - MODE=worker
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  api_data:

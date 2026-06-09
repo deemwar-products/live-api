@@ -1,0 +1,38 @@
+version: '3'
+
+tasks:
+ build:
+ desc: Build API service
+ cmds:
+ - go build -o api ./cmd/server
+
+ test:
+ desc: Run tests
+ cmds:
+ - go test -v ./...
+
+ test:coverage:
+ desc: Run tests with coverage
+ cmds:
+ - go test -coverprofile=coverage.out ./...
+ - go tool cover -func=coverage.out
+
+ lint:
+ desc: Run linter
+ cmds:
+ - go vet ./...
+
+ swagger:
+ desc: Generate swagger documentation
+ cmds:
+ - swag init -g cmd/server/main.go -o docs --dir .
+
+ dev:
+ desc: Run in development mode
+ cmds:
+ - air -c air.toml
+
+ clean:
+ desc: Clean build artifacts
+ cmds:
+ - rm -f api coverage.out

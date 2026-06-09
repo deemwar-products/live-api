@@ -1,0 +1,107 @@
+version: '3'
+
+tasks:
+ build:api:
+ desc: Build API service
+ cmds:
+ - task -t apps/api/Taskfile.yaml build
+
+ build:worker:
+ desc: Build Worker service
+ cmds:
+ - task -t apps/worker/Taskfile.yaml build
+
+ build:
+ desc: Build all services
+ deps:
+ - build:api
+ - build:worker
+
+ test:api:
+ desc: Run API tests
+ cmds:
+ - task -t apps/api/Taskfile.yaml test
+
+ test:worker:
+ desc: Run Worker tests
+ cmds:
+ - task -t apps/worker/Taskfile.yaml test
+
+ test:
+ desc: Run all tests
+ deps:
+ - test:api
+ - test:worker
+
+ swagger:
+ desc: Generate swagger documentation
+ cmds:
+ - task -t apps/api/Taskfile.yaml swagger
+
+ docker:build:
+ desc: Build Docker images
+ cmds:
+ - docker build -t api:latest apps/api
+ - docker build -t worker:latest apps/worker
+
+ docker:up:
+ desc: Start all containers
+ cmds:
+ - docker compose up --build
+
+ docker:up:d:
+ desc: Start all containers in detached mode
+ cmds:
+ - docker compose up -d --build
+
+ docker:down:
+ desc: Stop all containers
+ cmds:
+ - docker compose down
+
+ docker:logs:
+ desc: View logs
+ cmds:
+ - docker compose logs -f
+
+ dev:api:
+ desc: Run API in development mode
+ cmds:
+ - task -t apps/api/Taskfile.yaml dev
+
+ dev:worker:
+ desc: Run Worker in development mode
+ cmds:
+ - task -t apps/worker/Taskfile.yaml dev
+
+ lint:api:
+ desc: Run API linter
+ cmds:
+ - task -t apps/api/Taskfile.yaml lint
+
+ lint:worker:
+ desc: Run Worker linter
+ cmds:
+ - task -t apps/worker/Taskfile.yaml lint
+
+ lint:
+ desc: Run all linters
+ cmds:
+ - lint:api
+ - lint:worker
+
+ clean:api:
+ desc: Clean API artifacts
+ cmds:
+ - task -t apps/api/Taskfile.yaml clean
+
+ clean:worker:
+ desc: Clean Worker artifacts
+ cmds:
+ - task -t apps/worker/Taskfile.yaml clean
+
+ clean:
+ desc: Clean all artifacts
+ cmds:
+ - clean:api
+ - clean:worker

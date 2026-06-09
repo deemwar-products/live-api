@@ -25,3 +25,5 @@ skills-lock.json
 
 # Per-app ignores (Node / Vite)
 # apps/ui/.gitignore handles apps/ui/node_modules and apps/ui/dist
+**/node_modules
+**/dist

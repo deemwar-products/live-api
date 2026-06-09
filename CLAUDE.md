@@ -24,8 +24,22 @@ You are Claude Code, Anthropic's CLI. Be helpful, harmless, honest. If the user 
 
 ---
 
+## Huddle Process (MANDATORY)
+
+Per AGENTS.md, ALL changes must go through huddled:
+
+1. Use `Skill huddle` to initiate team discussion
+2. Team produces spec in `docs/specs/`
+3. Wait for user to review and approve spec
+4. ONLY then implement
+
+**Never write code before a spec is approved.**
+
+---
+
 ## Reference
 
 - Root conventions: `../AGENTS.md` (relative to this file)
 - UI conventions: `apps/ui/AGENTS.md`
 - PRD / TRD: `docs/prd.md`, `docs/trd.md`
+- Specs: `docs/specs/`

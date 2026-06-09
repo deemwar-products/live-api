@@ -1,0 +1,33 @@
+version: '3'
+
+tasks:
+ build:
+ desc: Build Worker service
+ cmds:
+ - go build -o worker ./cmd/worker
+
+ test:
+ desc: Run tests
+ cmds:
+ - go test -v ./...
+
+ test:coverage:
+ desc: Run tests with coverage
+ cmds:
+ - go test -coverprofile=coverage.out ./...
+ - go tool cover -func=coverage.out
+
+ lint:
+ desc: Run linter
+ cmds:
+ - go vet ./...
+
+ dev:
+ desc: Run in development mode
+ cmds:
+ - air -c air.toml
+
+ clean:
+ desc: Clean build artifacts
+ cmds:
+ - rm -f worker coverage.out

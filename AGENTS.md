@@ -36,8 +36,30 @@ Voice + chat AI customer support platform. Three interfaces in one app:
 
 ---
 
+## Huddle Process (REQUIRED for any change)
+
+Before implementing ANY change, we MUST use the huddle process:
+
+1. **Initiate Huddle**: Use the `huddle` skill to assemble the team
+2. **Team Roles**: Different agents argue and discuss the approach
+3. **Generate Spec**: Team produces a spec file in `docs/specs/`
+4. **User Review**: User reviews and approves the spec
+5. **Implementation**: Only after spec approval, implement the change
+
+**Spec File Location**: `docs/specs/{feature-name}.md`
+
+The huddle ensures:
+- Multiple perspectives are considered
+- Architecture decisions are documented
+- User has visibility before code is written
+
+> **This is mandatory for all changes — no exceptions.**
+
+---
+
 ## Reference
 
 - Product requirements: `docs/prd.md`
 - Technical requirements: `docs/trd.md`
+- Specs (approved): `docs/specs/`
 - Domain research, scenarios, design system: `design-artifacts/`
