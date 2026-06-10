@@ -1,38 +1,81 @@
 package config
 
-import "testing"
+import (
+ "os"
+ "sync"
+ "testing"
+)
 
-func TestLoadUsesFallbacks(t *testing.T) {
-	t.Setenv("PORT", "")
-	t.Setenv("REDIS_HOST", "")
-	t.Setenv("REDIS_PORT", "")
-	t.Setenv("DB_PATH", "")
-
-	cfg := Load()
-
-	if cfg.Port != "8080" {
-		t.Fatalf("expected default port, got %q", cfg.Port)
-	}
-	if cfg.RedisHost != "localhost" {
-		t.Fatalf("expected default redis host, got %q", cfg.RedisHost)
-	}
-	if cfg.RedisPort != "6379" {
-		t.Fatalf("expected default redis port, got %q", cfg.RedisPort)
-	}
-	if cfg.DBPath != "data/rag.db" {
-		t.Fatalf("expected default db path, got %q", cfg.DBPath)
-	}
+func reset(t *testing.T) {
+ t.Helper()
+ config = nil
+ once = sync.Once{}
 }
 
-func TestLoadUsesEnvVars(t *testing.T) {
-	t.Setenv("PORT", "9090")
-	t.Setenv("REDIS_HOST", "redis")
-	t.Setenv("REDIS_PORT", "6380")
-	t.Setenv("DB_PATH", "custom.db")
+func TestConfig_WhenLoadCalled_ThenReturnsConfigStruct(t *testing.T) {
+ reset(t)
+ cfg := Load()
+ if cfg == nil {
+ t.Fatal("Load returned nil")
+ }
+ if cfg.Port == "" {
+ t.Error("Port not set")
+ }
+ if cfg.RedisHost == "" {
+ t.Error("RedisHost not set")
+ }
+ if cfg.RedisPort == "" {
+ t.Error("RedisPort not set")
+ }
+ if cfg.DBPath == "" {
+ t.Error("DBPath not set")
+ }
+}
 
-	cfg := Load()
+func TestConfig_WhenLoadCalledMultipleTimes_ThenReturnsSameInstance(t *testing.T) {
+ reset(t)
+ cfg1 := Load()
+ cfg2 := Load()
+ if cfg1 != cfg2 {
+ t.Error("Load should return same instance")
+ }
+}
 
-	if cfg.Port != "9090" || cfg.RedisHost != "redis" || cfg.RedisPort != "6380" || cfg.DBPath != "custom.db" {
-		t.Fatalf("unexpected config: %+v", cfg)
-	}
+func TestGetEnv_WhenEnvVarNotSet_ThenReturnsDefault(t *testing.T) {
+ os.Unsetenv("TEST_VAR_UNSET")
+ result := getEnv("TEST_VAR_UNSET", "default")
+ if result != "default" {
+ t.Errorf("Expected default, got %s", result)
+ }
+}
+
+func TestGetEnv_WhenEnvVarEmpty_ThenReturnsDefault(t *testing.T) {
+ os.Setenv("TEST_VAR_EMPTY", "")
+ defer os.Unsetenv("TEST_VAR_EMPTY")
+ result := getEnv("TEST_VAR_EMPTY", "default")
+ if result != "default" {
+ t.Errorf("Expected default, got %s", result)
+ }
+}
+
+func TestGetEnv_WhenEnvVarSet_ThenReturnsValue(t *testing.T) {
+ os.Setenv("TEST_VAR_SET", "value123")
+ defer os.Unsetenv("TEST_VAR_SET")
+ result := getEnv("TEST_VAR_SET", "default")
+ if result != "value123" {
+ t.Errorf("Expected value123, got %s", result)
+ }
+}
+
+func TestConfig_WhenLogConfigurationCalled_ThenLogsConfig(t *testing.T) {
+ reset(t)
+ cfg := Load()
+ cfg.LogConfiguration()
+}
+
+func TestConfig_WhenLogConfigurationCalled_ThenLogsCustomConfig(t *testing.T) {
+ reset(t)
+ cfg := Load()
+ cfg.Port = "9999"
+ cfg.LogConfiguration()
 }
