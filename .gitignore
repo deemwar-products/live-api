@@ -27,3 +27,8 @@ skills-lock.json
 # apps/ui/.gitignore handles apps/ui/node_modules and apps/ui/dist
 **/node_modules
 **/dist
+
+# Database files (DuckDB)
+**/data/
+**/*.db
+**/*.db.wal
