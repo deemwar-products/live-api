@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
@@ -67,6 +68,7 @@ export function ConsolePage() {
         </motion.div>
 
         <div className="space-y-6">
+ <div className="flex justify-end"><Link to={CONSOLE.live} className="inline-flex items-center gap-1.5 rounded-full bg-fg px-4 py-2 text-xs font-medium tracking-tight text-bg shadow-sm transition-all duration-300 ease-[var(--ease-out-soft)] hover:shadow-md active:scale-[0.97]">Start live session →</Link></div>
           <KpiStrip />
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
