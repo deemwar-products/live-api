@@ -19,4 +19,18 @@ export const COMMON_LABELS = {
     viewPricing: "View pricing",
     readDocs: "Read docs",
   },
+  liveSession: {
+    title: "Live Session",
+    caption: "Audio conversation with Gemini",
+    connect: "Start session",
+    disconnect: "End session",
+    connecting: "Connecting…",
+    listening: "Listening…",
+    speaking: "AI is speaking…",
+    idle: "Ready",
+    error: "Connection error",
+    permissionDenied: "Microphone access denied",
+    transcript: "Transcript",
+    noTranscript: "No transcript yet",
+  },
 } as const;

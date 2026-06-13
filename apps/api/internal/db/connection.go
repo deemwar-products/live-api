@@ -14,7 +14,7 @@ import (
 var log = logger.New("db")
 
 func OpenReadOnly(path string) (*sql.DB, error) {
-	destination := fmt.Sprintf("file:%s?access_mode=read_only", path)
+	destination := fmt.Sprintf("%s?access_mode=read_only", path)
 	log.Info("Opening read-only connection to %s", destination)
 	return sql.Open("duckdb", destination)
 }

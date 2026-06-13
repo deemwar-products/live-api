@@ -12,6 +12,8 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+.env.dev
+.env.prod
 *.pem
 *.key
 
@@ -29,6 +31,5 @@ skills-lock.json
 **/dist
 
 # Database files (DuckDB)
-**/data/
 **/*.db
 **/*.db.wal

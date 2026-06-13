@@ -10,19 +10,22 @@ import (
 
 // Config holds all runtime configuration for the worker.
 type Config struct {
-	DBPath string
-	RedisAddr string // host:port
-	RedisPassword string
-	RedisDB int
-	ConsumerGroup string
-	StreamName string
-	ConsumerName string
-	MaxAttempts int
-	GeminiAPIKey string
+	DBPath         string
+	RedisAddr      string // host:port
+	RedisPassword  string
+	RedisDB        int
+	RagStreamName  string
+	WriteStreamName string
+	RagGroup       string
+	WriteGroup     string
+	ConsumerName   string
+	MaxAttempts    int
+	DocumentsDir    string
+	GeminiAPIKey   string
 	EmbeddingModel string
-	EmbeddingDim int
+	EmbeddingDim   int
 	TargetChildTokens int
-	OverlapTokens int
+	OverlapTokens  int
 	// IdleBlockMS is how long XREADGROUP blocks when no messages are available.
 	// Lower = more responsive shutdown; higher = less Redis round-trips when idle.
 	IdleBlockMS int
@@ -31,20 +34,23 @@ type Config struct {
 // Defaults returns a Config populated with sensible defaults.
 func Defaults() Config {
 	return Config{
-		DBPath: "data/rag.db",
-		RedisAddr: "localhost:6379",
-		RedisPassword: "",
-		RedisDB: 0,
-		ConsumerGroup: "workers",
-		StreamName: "jobs.stream",
-		ConsumerName: "", // set in Load() if empty
-		MaxAttempts: 3,
-		GeminiAPIKey: "",
-		EmbeddingModel: "text-embedding-004",
-		EmbeddingDim: 768,
+		DBPath:            "../data/data.db",
+		RedisAddr:         "localhost:6379",
+		RedisPassword:     "",
+		RedisDB:           0,
+		RagStreamName:     "jobs.rag",
+		WriteStreamName:   "jobs.writes",
+		RagGroup:          "workers.rag",
+		WriteGroup:        "workers.writes",
+		ConsumerName:      "",
+		MaxAttempts:       3,
+		DocumentsDir:      "documents",
+		GeminiAPIKey:      "",
+		EmbeddingModel:    "text-embedding-004",
+		EmbeddingDim:      768,
 		TargetChildTokens: 150,
-		OverlapTokens: 30,
-		IdleBlockMS: 5000,
+		OverlapTokens:     30,
+		IdleBlockMS:       5000,
 	}
 }
 
@@ -78,13 +84,28 @@ func Load() (Config, error) {
 		c.RedisDB = n
 	}
 	if v := os.Getenv("CONSUMER_GROUP"); v != "" {
-		c.ConsumerGroup = v
+		c.RagGroup = v
+	}
+	if v := os.Getenv("RAG_STREAM"); v != "" {
+		c.RagStreamName = v
+	}
+	if v := os.Getenv("WRITE_STREAM"); v != "" {
+		c.WriteStreamName = v
+	}
+	if v := os.Getenv("RAG_GROUP"); v != "" {
+		c.RagGroup = v
+	}
+	if v := os.Getenv("WRITE_GROUP"); v != "" {
+		c.WriteGroup = v
 	}
 	if v := os.Getenv("STREAM_NAME"); v != "" {
-		c.StreamName = v
+		c.RagStreamName = v // legacy compat
 	}
 	if v := os.Getenv("CONSUMER_NAME"); v != "" {
 		c.ConsumerName = v
+	}
+	if v := os.Getenv("DOCUMENTS_DIR"); v != "" {
+		c.DocumentsDir = v
 	}
 	if v := os.Getenv("MAX_ATTEMPTS"); v != "" {
 		n, err := strconv.Atoi(v)
@@ -193,11 +214,17 @@ func (c Config) Validate() error {
 	if c.RedisAddr == "" {
 		return errors.New("REDIS_HOST or REDIS_ADDR is required")
 	}
-	if c.StreamName == "" {
-		return errors.New("STREAM_NAME is required")
+	if c.RagStreamName == "" {
+		return errors.New("RAG_STREAM is required")
 	}
-	if c.ConsumerGroup == "" {
-		return errors.New("CONSUMER_GROUP is required")
+	if c.WriteStreamName == "" {
+		return errors.New("WRITE_STREAM is required")
+	}
+	if c.RagGroup == "" {
+		return errors.New("RAG_GROUP is required")
+	}
+	if c.WriteGroup == "" {
+		return errors.New("WRITE_GROUP is required")
 	}
 	if c.ConsumerName == "" {
 		return errors.New("CONSUMER_NAME is required")

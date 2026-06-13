@@ -10,17 +10,23 @@ import (
 
 func TestDefaults(t *testing.T) {
 	c := Defaults()
-	if c.DBPath != "data/rag.db" {
-		t.Errorf("default DBPath: got %q want %q", c.DBPath, "data/rag.db")
+	if c.DBPath != "../data/data.db" {
+		t.Errorf("default DBPath: got %q want %q", c.DBPath, "../data/data.db")
 	}
 	if c.RedisAddr != "localhost:6379" {
 		t.Errorf("default RedisAddr: got %q", c.RedisAddr)
 	}
-	if c.ConsumerGroup != "workers" {
-		t.Errorf("default ConsumerGroup: got %q", c.ConsumerGroup)
+	if c.RagStreamName != "jobs.rag" {
+		t.Errorf("default RagStreamName: got %q", c.RagStreamName)
 	}
-	if c.StreamName != "jobs.stream" {
-		t.Errorf("default StreamName: got %q", c.StreamName)
+	if c.WriteStreamName != "jobs.writes" {
+		t.Errorf("default WriteStreamName: got %q", c.WriteStreamName)
+	}
+	if c.RagGroup != "workers.rag" {
+		t.Errorf("default RagGroup: got %q", c.RagGroup)
+	}
+	if c.WriteGroup != "workers.writes" {
+		t.Errorf("default WriteGroup: got %q", c.WriteGroup)
 	}
 	if c.MaxAttempts != 3 {
 		t.Errorf("default MaxAttempts: got %d want 3", c.MaxAttempts)
@@ -75,7 +81,10 @@ func TestLoad_AllEnvs(t *testing.T) {
 	t.Setenv("REDIS_PASSWORD", "secret")
 	t.Setenv("REDIS_DB", "2")
 	t.Setenv("CONSUMER_GROUP", "g1")
-	t.Setenv("STREAM_NAME", "s1")
+	t.Setenv("RAG_STREAM", "jobs.rag.test")
+	t.Setenv("WRITE_STREAM", "jobs.writes.test")
+	t.Setenv("RAG_GROUP", "workers.rag.test")
+	t.Setenv("WRITE_GROUP", "workers.writes.test")
 	t.Setenv("CONSUMER_NAME", "c1")
 	t.Setenv("MAX_ATTEMPTS", "5")
 	t.Setenv("GEMINI_API_KEY", "gk")
@@ -101,11 +110,17 @@ func TestLoad_AllEnvs(t *testing.T) {
 	if c.RedisDB != 2 {
 		t.Errorf("RedisDB: got %d", c.RedisDB)
 	}
-	if c.ConsumerGroup != "g1" {
-		t.Errorf("ConsumerGroup: got %q", c.ConsumerGroup)
+	if c.RagStreamName != "jobs.rag.test" {
+		t.Errorf("RagStreamName: got %q", c.RagStreamName)
 	}
-	if c.StreamName != "s1" {
-		t.Errorf("StreamName: got %q", c.StreamName)
+	if c.WriteStreamName != "jobs.writes.test" {
+		t.Errorf("WriteStreamName: got %q", c.WriteStreamName)
+	}
+	if c.RagGroup != "workers.rag.test" {
+		t.Errorf("RagGroup: got %q", c.RagGroup)
+	}
+	if c.WriteGroup != "workers.writes.test" {
+		t.Errorf("WriteGroup: got %q", c.WriteGroup)
 	}
 	if c.ConsumerName != "c1" {
 		t.Errorf("ConsumerName: got %q", c.ConsumerName)
@@ -273,11 +288,13 @@ func TestValidate(t *testing.T) {
 		mutate func(*Config)
 		wantErr bool
 	}{
-		{"valid", func(c *Config) { c.DBPath = "x"; c.RedisAddr = "h:p"; c.StreamName = "s"; c.ConsumerGroup = "g"; c.ConsumerName = "cn" }, false},
+		{"valid", func(c *Config) { c.DBPath = "x"; c.RedisAddr = "h:p"; c.RagStreamName = "s1"; c.WriteStreamName = "s2"; c.RagGroup = "g1"; c.WriteGroup = "g2"; c.ConsumerName = "cn" }, false},
 		{"missing DBPath", func(c *Config) { c.DBPath = "" }, true},
 		{"missing RedisAddr", func(c *Config) { c.RedisAddr = "" }, true},
-		{"missing StreamName", func(c *Config) { c.StreamName = "" }, true},
-		{"missing ConsumerGroup", func(c *Config) { c.ConsumerGroup = "" }, true},
+		{"missing RagStreamName", func(c *Config) { c.RagStreamName = "" }, true},
+		{"missing WriteStreamName", func(c *Config) { c.WriteStreamName = "" }, true},
+		{"missing RagGroup", func(c *Config) { c.RagGroup = "" }, true},
+		{"missing WriteGroup", func(c *Config) { c.WriteGroup = "" }, true},
 		{"missing ConsumerName", func(c *Config) { c.ConsumerName = "" }, true},
 	}
 	for _, tc := range cases {
@@ -292,11 +309,34 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestLoad_LegacyStreamName(t *testing.T) {
+	t.Setenv("STREAM_NAME", "legacy.stream")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.RagStreamName != "legacy.stream" {
+		t.Errorf("RagStreamName: got %q want legacy.stream", c.RagStreamName)
+	}
+}
+
+func TestLoad_DocumentsDir(t *testing.T) {
+	t.Setenv("DOCUMENTS_DIR", "/var/docs")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.DocumentsDir != "/var/docs" {
+		t.Errorf("DocumentsDir: got %q want /var/docs", c.DocumentsDir)
+	}
+}
+
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"DB_PATH", "REDIS_HOST", "REDIS_PORT", "REDIS_ADDR", "REDIS_PASSWORD",
-		"REDIS_DB", "CONSUMER_GROUP", "STREAM_NAME", "CONSUMER_NAME",
+		"REDIS_DB", "CONSUMER_GROUP", "RAG_STREAM", "WRITE_STREAM",
+		"RAG_GROUP", "WRITE_GROUP", "STREAM_NAME", "CONSUMER_NAME", "DOCUMENTS_DIR",
 		"MAX_ATTEMPTS", "GEMINI_API_KEY", "GOOGLE_API_KEY", "EMBEDDING_MODEL",
 		"EMBEDDING_DIM", "TARGET_CHILD_TOKENS", "OVERLAP_TOKENS", "IDLE_BLOCK_MS",
 	} {

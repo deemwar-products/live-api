@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { Container } from "@/components/ui/container";
 import { ConsoleShell } from "@/components/layout/console-shell";
+import { LiveSessionPanel } from "@/components/ui/live-session-panel";
 import { KpiStrip } from "@/pages/console/parts/kpi-strip";
 import { LiveConversations } from "@/pages/console/parts/live-conversations";
 import { RecentActivity } from "@/pages/console/parts/recent-activity";
@@ -73,7 +74,8 @@ export function ConsolePage() {
             <div className="lg:col-span-2">
               <LiveConversations />
             </div>
-            <div>
+            <div className="flex flex-col gap-6">
+              <LiveSessionPanel />
               <RecentActivity />
             </div>
           </div>

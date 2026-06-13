@@ -1,0 +1,50 @@
+version: '3'
+
+tasks:
+ default:
+ desc: Show available tasks
+ cmds:
+ - task --list
+
+ build:
+ desc: Build API binary
+ cmds:
+ - go build -o bin/api ./cmd/server
+
+ test:
+ desc: Run API tests
+ cmds:
+ - go test -cover ./...
+
+ lint:
+ desc: Run API linter
+ cmds:
+ - echo "lint placeholder"
+
+ swagger:
+ desc: Generate swagger docs
+ cmds:
+ - echo "swagger placeholder"
+
+ clean:
+ desc: Clean build artifacts
+ cmds:
+ - rm -rf bin/
+
+ dev:local:
+ desc: Run API locally
+ dotenv: [".env", ".env.local"]
+ cmds:
+ - go run ./cmd/server
+
+ dev:dev:
+ desc: Run API in dev-server mode
+ dotenv: [".env", ".env.dev"]
+ cmds:
+ - go run ./cmd/server
+
+ dev:prod:
+ desc: Run API in production mode
+ dotenv: [".env", ".env.prod"]
+ cmds:
+ - ./bin/api

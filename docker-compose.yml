@@ -9,9 +9,11 @@ services:
       - MODE=api
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - DB_PATH=/data/rag.db
+      - DB_PATH=/data/data.db
+      - MIGRATIONS_PATH=/migrations
     volumes:
       - api_data:/data
+      - ./apps/migrations:/migrations:ro
     depends_on:
       - redis
 

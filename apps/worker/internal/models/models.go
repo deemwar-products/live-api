@@ -1,4 +1,3 @@
-// Package models defines the core domain types used by the RAG pipeline.
 package models
 
 // ParentChunk is a semantic block of text from a document. It holds the

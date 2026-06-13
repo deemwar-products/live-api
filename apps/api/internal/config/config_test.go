@@ -2,18 +2,11 @@ package config
 
 import (
  "os"
- "sync"
  "testing"
 )
 
-func reset(t *testing.T) {
- t.Helper()
- config = nil
- once = sync.Once{}
-}
-
 func TestConfig_WhenLoadCalled_ThenReturnsConfigStruct(t *testing.T) {
- reset(t)
+ Reset()
  cfg := Load()
  if cfg == nil {
  t.Fatal("Load returned nil")
@@ -33,7 +26,7 @@ func TestConfig_WhenLoadCalled_ThenReturnsConfigStruct(t *testing.T) {
 }
 
 func TestConfig_WhenLoadCalledMultipleTimes_ThenReturnsSameInstance(t *testing.T) {
- reset(t)
+ Reset()
  cfg1 := Load()
  cfg2 := Load()
  if cfg1 != cfg2 {
@@ -68,14 +61,36 @@ func TestGetEnv_WhenEnvVarSet_ThenReturnsValue(t *testing.T) {
 }
 
 func TestConfig_WhenLogConfigurationCalled_ThenLogsConfig(t *testing.T) {
- reset(t)
+ Reset()
  cfg := Load()
  cfg.LogConfiguration()
 }
 
 func TestConfig_WhenLogConfigurationCalled_ThenLogsCustomConfig(t *testing.T) {
- reset(t)
+ Reset()
  cfg := Load()
  cfg.Port = "9999"
  cfg.LogConfiguration()
+}
+
+func TestConfig_WhenLoadWithEnvVarsSet_ThenUsesThem(t *testing.T) {
+ t.Setenv("PORT", "1234")
+ t.Setenv("REDIS_HOST", "redis.example.com")
+ t.Setenv("REDIS_PORT", "6380")
+ t.Setenv("DB_PATH", "/tmp/custom.db")
+ Reset()
+
+ cfg := Load()
+ if cfg.Port != "1234" {
+ t.Errorf("expected Port=1234, got %s", cfg.Port)
+ }
+ if cfg.RedisHost != "redis.example.com" {
+ t.Errorf("expected RedisHost=redis.example.com, got %s", cfg.RedisHost)
+ }
+ if cfg.RedisPort != "6380" {
+ t.Errorf("expected RedisPort=6380, got %s", cfg.RedisPort)
+ }
+ if cfg.DBPath != "/tmp/custom.db" {
+ t.Errorf("expected DBPath=/tmp/custom.db, got %s", cfg.DBPath)
+ }
 }

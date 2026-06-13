@@ -65,9 +65,19 @@ tasks:
  - docker compose logs -f
 
  dev:api:
- desc: Run API in development mode
+ desc: Run API in local dev mode (uses .env.local)
  cmds:
- - task -t apps/api/Taskfile.yaml dev
+ - task -t apps/api/Taskfile.yaml dev:local
+
+ dev:api:dev:
+ desc: Run API in dev-server mode (uses .env.dev)
+ cmds:
+ - task -t apps/api/Taskfile.yaml dev:dev
+
+ dev:api:prod:
+ desc: Run API in production mode (uses .env.prod)
+ cmds:
+ - task -t apps/api/Taskfile.yaml dev:prod
 
  dev:worker:
  desc: Run Worker in development mode
