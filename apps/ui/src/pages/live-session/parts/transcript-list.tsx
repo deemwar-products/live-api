@@ -35,9 +35,9 @@ export function TranscriptList() {
 
  return (
  <ol className="flex flex-col gap-3">
- {list.map((entry) => (
+ {list.map((entry, i) => (
  <li
- key={entry.turnId + ":" + entry.ts}
+ key={entry.turnId + ":" + i}
  className={cn(
  "flex flex-col gap-1 text-sm",
  entry.turnComplete ? "opacity-80" : "opacity-100",

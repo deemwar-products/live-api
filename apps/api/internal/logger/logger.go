@@ -27,12 +27,25 @@ var sensitiveKeySubstrings = []string{
 	"secret",
 }
 
-// New returns a JSON slog.Logger writing to stderr at info level.
-// Suitable for containerized/local dev. Swap for a *slog.Logger
-// configured by env if structured levels or destinations grow.
+// New returns a JSON slog.Logger writing to stderr. The level defaults
+// to info but can be lowered to debug via LOG_LEVEL=debug — useful for
+// tracing the audio_in/audio_out pipeline during local debugging.
 func New() *slog.Logger {
-	h := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
+	h := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: levelFromEnv()})
 	return slog.New(h)
+}
+
+func levelFromEnv() slog.Level {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 // RedactValue returns a safe string to log for a value attached to a

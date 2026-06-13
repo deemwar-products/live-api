@@ -6,6 +6,8 @@
  */
 
 import { useEffect, useState } from "react";
+import { RotateCcw } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { Waveform } from "@/components/waveform";
 import { cn } from "@/lib/cn";
@@ -14,6 +16,7 @@ import { LIVE_SESSION_PAGE_LABELS } from "@/labels/live-session";
 import { StatusIndicator } from "@/pages/live-session/parts/status-indicator";
 import { TranscriptList } from "@/pages/live-session/parts/transcript-list";
 import { ControlsBar } from "@/pages/live-session/parts/controls-bar";
+import { LiveCaption } from "@/pages/live-session/parts/live-caption";
 import type { StatusState } from "@/lib/live/protocol";
 
 function useStatus(): StatusState | "idle" {
@@ -87,10 +90,12 @@ export function SessionView({
  muted,
  onToggleMute,
  onEnd,
+ onStart,
 }: {
  muted: boolean;
  onToggleMute: () => void;
  onEnd: () => void;
+ onStart: () => void;
 }) {
  const status = useStatus();
  const subState = useSubState();
@@ -141,7 +146,7 @@ export function SessionView({
  {SUB_LABEL[subState]}
  </span>
  )}
- {status === "live" && (
+ {(status === "live" || status === "ended") && session.startedAt && (
  <span className="text-xs tabular-nums text-fg-muted">{formatElapsed(elapsed)}</span>
  )}
  </div>
@@ -159,7 +164,27 @@ export function SessionView({
  modelActive={audioActivity.modelActive}
  />
  )}
+ {showSub && <LiveCaption />}
+ {status === "ended" ? (
+ <div className="flex flex-col items-center gap-3 py-2 text-center">
+ <span className="inline-flex size-10 items-center justify-center rounded-full bg-bg-muted text-fg-muted">
+ <RotateCcw className="size-4" strokeWidth={1.75} />
+ </span>
+ <div className="space-y-1">
+ <p className="text-sm font-medium text-fg">
+ {LIVE_SESSION_PAGE_LABELS.ended.title}
+ </p>
+ <p className="text-sm text-fg-muted">
+ {LIVE_SESSION_PAGE_LABELS.ended.body}
+ </p>
+ </div>
+ <Button size="md" onClick={onStart} leading={<RotateCcw className="size-4" />}>
+ {LIVE_SESSION_PAGE_LABELS.ended.cta}
+ </Button>
+ </div>
+ ) : (
  <ControlsBar muted={muted} onToggleMute={onToggleMute} onEnd={onEnd} />
+ )}
  </CardBody>
  </Card>
 

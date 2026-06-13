@@ -47,6 +47,10 @@ export const LIVE_SESSION_PAGE_LABELS = {
  modelLabel: "Gemini",
  },
 
+ caption: {
+ listening: "Listening…",
+ },
+
  error: {
  generic: "Something went wrong. You can try starting a new session.",
  micDenied:

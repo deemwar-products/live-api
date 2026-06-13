@@ -115,7 +115,9 @@ export function connectLive(url: string): LiveClient {
  }
 
  return {
- state,
+ get state() {
+ return state;
+ },
  sendStart(p = {}) {
  send("start", p);
  },

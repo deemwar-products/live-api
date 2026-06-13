@@ -118,17 +118,36 @@ class LiveStore {
 
  appendTranscript(p: TranscriptPayload): void {
  const list = this.state.transcript.slice();
- const last = list[list.length - 1];
 
- if (last && last.turnId === p.turnId && !last.turnComplete) {
- // Update the in-flight turn.
- list[list.length - 1] = {
- ...last,
- text: p.text,
+ // Find the most recent entry for this turn (turnIds are reused across
+ // turns within a session, so search from the end).
+ let idx = -1;
+ for (let i = list.length - 1; i >= 0; i--) {
+ if (list[i].turnId === p.turnId) {
+ idx = i;
+ break;
+ }
+ }
+
+ if (idx >= 0 && !list[idx].turnComplete) {
+ // Gemini streams transcription as incremental deltas — append rather
+ // than replace. A trailing turnComplete marker arrives with empty
+ // text just to freeze the entry.
+ list[idx] = {
+ ...list[idx],
+ text: list[idx].text + p.text,
  turnComplete: p.turnComplete,
- ts: Date.now(),
+ ts: p.text ? Date.now() : list[idx].ts,
  };
- } else {
+ this.setState({ transcript: list });
+ return;
+ }
+
+ if (p.text === "") {
+ // Nothing to show and no open turn to freeze — drop it.
+ return;
+ }
+
  list.push({
  turnId: p.turnId,
  role: p.role,
@@ -136,7 +155,6 @@ class LiveStore {
  turnComplete: p.turnComplete,
  ts: Date.now(),
  });
- }
  this.setState({ transcript: list });
  }
 

@@ -45,9 +45,10 @@ func NewHandler(cfg config.Config, log *slog.Logger) *Handler {
 func (h *Handler) Handle(c *gin.Context) {
 	ws, err := h.Upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		h.Log.Warn("ws upgrade failed", "error", err.Error())
+		h.Log.Warn("ws upgrade failed", "error", err.Error(), "remote", c.Request.RemoteAddr)
 		return
 	}
+	h.Log.Info("ws connection accepted", "remote", c.Request.RemoteAddr, "origin", c.Request.Header.Get("Origin"))
 
 	sess, err := NewSession(context.Background(), h.Cfg, h.Log, ws, h.Cfg.GeminiModel)
 	if err != nil {

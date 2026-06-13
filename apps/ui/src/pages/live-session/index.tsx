@@ -70,7 +70,7 @@ export function LiveSessionPage() {
  )}
 
  {(status === "live" || status === "interrupted" || status === "ended") && (
- <SessionView muted={muted} onToggleMute={toggleMute} onEnd={end} />
+ <SessionView muted={muted} onToggleMute={toggleMute} onEnd={end} onStart={start} />
  )}
  </Container>
  </ConsoleShell>

@@ -18,6 +18,7 @@ import {
  SAMPLE_RATE_IN,
  SAMPLE_RATE_OUT,
 } from "@/lib/live/protocol";
+import { logger } from "@/lib/logger";
 
 const CAPTURE_FRAME_MS = 20;
 const PLAYBACK_JITTER_FRAMES = 3;
@@ -72,11 +73,23 @@ class PCMEmitter extends AudioWorkletProcessor {
  constructor() {
  super();
  this.silenceFrames = 0;
+ this.warnedNoInput = false;
+ this.speechArmed = true;
  }
 
  process(inputs) {
  const input = inputs[0];
- if (!input || input.length === 0) return true;
+ if (!input || input.length === 0) {
+ // The MediaStreamTrack delivered zero channels for this render
+ // quantum — typically a virtual/loopback input device (e.g.
+ // BlackHole) with no signal feeding it, rather than a real mic.
+ // Warn once so this doesn't look like a silent infinite hang.
+ if (!this.warnedNoInput) {
+ this.warnedNoInput = true;
+ this.port.postMessage({ kind: "no_input" });
+ }
+ return true;
+ }
  const channel = input[0];
  if (!channel) return true;
  // Copy because the underlying buffer is reused.
@@ -97,15 +110,21 @@ class PCMEmitter extends AudioWorkletProcessor {
  if (this.silenceFrames === SPEECH_END_FRAMES) {
  // Tell the main thread that speech ended, so it can update UI.
  this.port.postMessage({ kind: "silence" });
+ this.speechArmed = true;
  }
  }
- if (isSpeech && this.silenceFrames === 0) {
- // Emit "speech" only on the rising edge of a speech burst — the
- // main thread ignores subsequent speech messages until silence
- // arrives, so this naturally debounces.
+ if (isSpeech && this.speechArmed) {
+ // Emit "speech" only on the rising edge of a speech burst — without
+ // the armed flag this fires on every ~8ms render quantum while the
+ // user is talking, flooding the main thread with speech-start events.
  this.port.postMessage({ kind: "speech" });
+ this.speechArmed = false;
  }
  this.port.postMessage({ kind: "pcm", buffer: copy });
+ // A falsy return tells the browser this node is done and it can stop
+ // calling process() — without this, Chrome calls process() exactly
+ // once and the worklet goes silent forever (no more "pcm" messages).
+ return true;
  }
 }
 registerProcessor("pcm-emitter", PCMEmitter);
@@ -114,22 +133,55 @@ registerProcessor("pcm-emitter", PCMEmitter);
 export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle> {
  const stream = await navigator.mediaDevices.getUserMedia({
  audio: {
- sampleRate: SAMPLE_RATE_IN,
+ // `ideal` (not a hard value) — most hardware mics don't natively
+ // support 16kHz and would throw OverconstrainedError on a hard
+ // constraint. The AudioContext below resamples to SAMPLE_RATE_IN
+ // regardless of what the device delivers.
+ sampleRate: { ideal: SAMPLE_RATE_IN },
  channelCount: CHANNELS,
  echoCancellation: true,
  noiseSuppression: true,
  },
  });
 
+ const track = stream.getAudioTracks()[0];
+ logger.info("live: mic track acquired", {
+ label: track?.label,
+ settings: track?.getSettings(),
+ });
+
  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE_IN });
+ // Creating an AudioContext after `await getUserMedia(...)` breaks the
+ // user-gesture chain in some browsers, so it can start "suspended" —
+ // the worklet's process() callback then never fires and no audio_in
+ // frames are ever produced (with no error). Resume explicitly.
+ if (ctx.state === "suspended") {
+ await ctx.resume();
+ }
+ logger.info("live: capture audio context", { state: ctx.state, sampleRate: ctx.sampleRate });
+ if (ctx.sampleRate !== SAMPLE_RATE_IN) {
+ // We tell the server every frame is SAMPLE_RATE_IN regardless — if the
+ // browser ignored the requested rate, audio_in frames are mislabeled
+ // and Gemini will hear sped-up/slowed-down audio.
+ logger.warn("live: audio context sample rate mismatch — audio_in frames will be mislabeled", {
+ requested: SAMPLE_RATE_IN,
+ actual: ctx.sampleRate,
+ });
+ }
  const blob = new Blob([PCM_WORKLET_SOURCE], { type: "application/javascript" });
  const url = URL.createObjectURL(blob);
  await ctx.audioWorklet.addModule(url);
  URL.revokeObjectURL(url);
+ logger.info("live: audio worklet module loaded");
 
  const source = ctx.createMediaStreamSource(stream);
  const node = new AudioWorkletNode(ctx, "pcm-emitter");
  source.connect(node);
+ // The worklet never writes to its output, but it still needs to be
+ // connected into the graph reaching `destination` — otherwise the
+ // audio renderer treats it as inactive and process() is never called,
+ // so no "pcm"/"speech" messages are posted. This routes silence only.
+ node.connect(ctx.destination);
 
  const samplesPerFrame = (SAMPLE_RATE_IN * CAPTURE_FRAME_MS) / 1000;
  let buffer = new Float32Array(samplesPerFrame * 4);
@@ -137,6 +189,14 @@ export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle>
 
  node.port.onmessage = (ev: MessageEvent<{ kind: string; buffer?: Float32Array }>) => {
  const msg = ev.data;
+ if (msg.kind === "no_input") {
+ cb.onError(
+ new Error(
+ "Selected microphone is delivering no audio channels — it may be a virtual/loopback device (e.g. BlackHole) with no input. Switch to a real microphone in your browser/OS sound settings.",
+ ),
+ );
+ return;
+ }
  if (msg.kind === "speech") {
  cb.onSpeechStart?.();
  return;
@@ -145,8 +205,8 @@ export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle>
 
  const chunk = msg.buffer;
  const needed = samplesPerFrame;
- if (buffered + chunk.length < needed) {
- // Grow buffer if needed.
+ if (buffer.length < buffered + chunk.length) {
+ // Grow buffer if it's too small to hold the incoming chunk.
  const grown = new Float32Array(Math.max(buffer.length * 2, buffered + chunk.length));
  grown.set(buffer.subarray(0, buffered));
  buffer = grown;
@@ -200,14 +260,27 @@ export interface PlaybackHandle {
 
 export function startPlayback(): PlaybackHandle {
  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE_OUT });
- // Keep ctx running by playing silence if it gets suspended on user-gesture boundaries.
+ // Same suspended-on-creation issue as startCapture — resume explicitly
+ // so queued audio_out frames actually play.
+ if (ctx.state === "suspended") {
+ void ctx.resume();
+ }
+ logger.info("live: playback audio context", { state: ctx.state, sampleRate: ctx.sampleRate });
  const queue: AudioBufferSourceNode[] = [];
+ let playing = false;
 
  function playNext() {
+ // Guard against overlapping playback: enqueue() can call playNext()
+ // while a source is still playing (e.g. queue length returns to 1
+ // right after the previous frame started). Without this guard, each
+ // new frame starts its own source on top of the current one.
+ if (playing) return;
  const next = queue.shift();
  if (!next) return;
+ playing = true;
  next.start();
  next.onended = () => {
+ playing = false;
  if (queue.length > 0) playNext();
  };
  }

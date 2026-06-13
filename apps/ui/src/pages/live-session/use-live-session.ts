@@ -11,6 +11,7 @@ import { connectLive, type LiveClient } from "@/lib/live/ws";
 import { liveStore } from "@/lib/live/store";
 import { startCapture, startPlayback, type CaptureHandle, type PlaybackHandle } from "@/lib/live/audio";
 import type { ErrorPayload, ServerMsg, StatusState } from "@/lib/live/protocol";
+import { logger } from "@/lib/logger";
 
 const WS_URL =
  (import.meta.env.VITE_API_WS_URL as string | undefined) ?? "ws://localhost:8080/v1/live";
@@ -42,20 +43,33 @@ export function useLiveSession() {
  liveStore.setStatus("connecting");
  setError(null);
 
+ logger.info("live: connecting", { url: wsUrl() });
  const client = connectLive(wsUrl());
  clientRef.current = client;
 
  // ----- Server messages -----
  let ignoreUntil = 0;
+ let audioOutFrames = 0;
+ let audioInFrames = 0;
  const offMsg = client.onServerMessage((msg: ServerMsg) => {
  switch (msg.type) {
  case "ready":
+ logger.info("live: ready", { ...msg.payload });
  liveStore.setReady(msg.payload);
  liveStore.setStatus("live");
  // Start capture + playback after Ready.
  void beginMedia();
  break;
  case "audio_out": {
+ audioOutFrames += 1;
+ if (audioOutFrames === 1 || audioOutFrames % 50 === 0) {
+ logger.info("live: audio_out", {
+ frame: audioOutFrames,
+ bytes: msg.payload.pcm.length,
+ durationMs: msg.payload.durationMs,
+ final: msg.payload.final,
+ });
+ }
  // Drop audio_out frames received during the post-interrupt ignore
  // window so the queued model audio doesn't keep playing.
  if (performance.now() < ignoreUntil) {
@@ -70,6 +84,7 @@ export function useLiveSession() {
  break;
  }
  case "transcript":
+ logger.info("live: transcript", { ...msg.payload });
  liveStore.appendTranscript(msg.payload);
  // Once Gemini's first transcript chunk arrives, user has heard
  // something — flag user activity to drop sub-state back to listening
@@ -77,6 +92,7 @@ export function useLiveSession() {
  if (msg.payload.role === "user") liveStore.noteUserActivity();
  break;
  case "status": {
+ logger.info("live: status", { ...msg.payload });
  const prevStatus = liveStore.getState().status;
  liveStore.setStatus(msg.payload.state);
  // Server told us we were interrupted: drop queued audio and
@@ -94,6 +110,7 @@ export function useLiveSession() {
  break;
  }
  case "error": {
+ logger.error("live: server error", { ...msg.payload });
  const { fatal } = mapError(msg.payload);
  liveStore.setError(msg.payload);
  setError({ code: msg.payload.code, message: msg.payload.message });
@@ -105,18 +122,31 @@ export function useLiveSession() {
  }
  });
 
- client.onClose(() => {
+ client.onOpen(() => {
+ logger.info("live: ws open");
+ // Kick the session off; server is permissive — start is a no-op today.
+ client.sendStart({});
+ });
+
+ client.onError((ev) => {
+ logger.error("live: ws error", { event: ev.type });
+ });
+
+ client.onClose((ev) => {
+ logger.info("live: ws closed", { code: ev.code, reason: ev.reason });
  teardown();
  liveStore.setStatus("ended");
  });
 
- // Kick the session off; server is permissive — start is a no-op today.
- client.onOpen(() => client.sendStart({}));
-
  async function beginMedia() {
+ logger.info("live: requesting microphone");
  try {
  const capture = await startCapture({
  onFrame: (b64, durationMs) => {
+ audioInFrames += 1;
+ if (audioInFrames === 1 || audioInFrames % 50 === 0) {
+ logger.info("live: audio_in", { frame: audioInFrames, bytes: b64.length, durationMs });
+ }
  if (mutedRef.current) return;
  clientRef.current?.sendAudioIn({
  pcm: b64,
@@ -127,6 +157,7 @@ export function useLiveSession() {
  });
  },
  onSpeechStart: () => {
+ logger.info("live: speech start (VAD)");
  // VAD fired — flip sub-state to listening unless the model is
  // currently speaking, in which case barge in.
  const sub = liveStore.getState().subState;
@@ -143,13 +174,16 @@ export function useLiveSession() {
  window.setTimeout(() => liveStore.setMicActive(false), 400);
  },
  onError: (err) => {
+ logger.error("live: capture error", { message: err.message });
  setError({ code: "mic_error", message: err.message });
  liveStore.setError({ code: "mic_error", message: err.message, fatal: false });
  },
  });
  captureRef.current = capture;
+ logger.info("live: microphone capture started");
  } catch (e) {
  const message = e instanceof Error ? e.message : "microphone unavailable";
+ logger.error("live: microphone capture failed", { message });
  setError({ code: "mic_denied", message });
  liveStore.setError({ code: "mic_denied", message, fatal: false });
  // Don't tear down the WS — let the user see Gemini's text even without mic.
@@ -169,7 +203,23 @@ export function useLiveSession() {
  }, 300);
  }
 
+ // Periodic summary so it's obvious from the console alone whether the
+ // mic is producing frames and whether the model is responding — the
+ // fastest way to tell "browser not sending" from "backend not replying".
+ const heartbeat = window.setInterval(() => {
+ const s = liveStore.getState();
+ logger.info("live: heartbeat", {
+ wsState: clientRef.current?.state,
+ audioInFrames,
+ audioOutFrames,
+ micActive: s.micActive,
+ modelActive: s.modelActive,
+ subState: s.subState,
+ });
+ }, 2000);
+
  function teardown() {
+ window.clearInterval(heartbeat);
  offMsg();
  try {
  clientRef.current?.close();

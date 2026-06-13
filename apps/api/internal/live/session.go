@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +41,12 @@ type Session struct {
 	// writeMu serialises writes to the browser WS. Gorilla requires
 	// exactly one writer at a time.
 	writeMu sync.Mutex
+
+	// audioInFrames counts audio_in frames received from the browser.
+	// Used to throttle debug logging of the (otherwise ~50/s) audio stream,
+	// and watched by audioInWatchdog to confirm the browser is sending
+	// audio at all.
+	audioInFrames atomic.Uint64
 }
 
 // NewSession opens the upstream Gemini Live connection and returns a
@@ -46,12 +54,14 @@ type Session struct {
 // is only used to establish the upstream — use Session.Run with a
 // fresh context for the actual session lifetime.
 func NewSession(ctx context.Context, cfg config.Config, log *slog.Logger, ws *websocket.Conn, model string) (*Session, error) {
+	log.Debug("creating genai client", "model", model)
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey: cfg.GeminiAPIKey,
 		Backend: genai.BackendGeminiAPI,
 		HTTPOptions: genai.HTTPOptions{APIVersion: "v1alpha"},
 	})
 	if err != nil {
+		log.Error("create genai client failed", "error", err.Error())
 		return nil, fmt.Errorf("create genai client: %w", err)
 	}
 
@@ -64,10 +74,13 @@ func NewSession(ctx context.Context, cfg config.Config, log *slog.Logger, ws *we
 		},
 	}
 
+	log.Debug("connecting to gemini live", "model", model)
 	gSession, err := client.Live.Connect(ctx, model, connectCfg)
 	if err != nil {
+		log.Error("connect gemini live failed", "model", model, "error", err.Error())
 		return nil, fmt.Errorf("connect gemini live: %w", err)
 	}
+	log.Debug("gemini live connected", "model", model)
 
 	id := "sess_" + uuid.NewString()
 	return &Session{
@@ -101,11 +114,12 @@ func (s *Session) Run(parent context.Context) error {
 	pingTicker := time.NewTicker(s.cfg.PingInterval)
 	defer pingTicker.Stop()
 
-	// 3. Goroutines: in, out, heartbeat watcher.
+	// 3. Goroutines: in, out, heartbeat watcher, audio-in watchdog.
 	errCh := make(chan error, 3)
 	go func() { errCh <- s.pumpIn(ctx) }()
 	go func() { errCh <- s.pumpOut(ctx) }()
 	go func() { errCh <- s.heartbeatLoop(ctx, pingTicker) }()
+	go s.audioInWatchdog(ctx)
 
 	// 4. Wait for first error (or timeout) and tear down.
 	err := <-errCh
@@ -162,19 +176,27 @@ func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
 	switch env.Type {
 	case TypeStart:
 		// Session is already live after Run begins; start is a no-op for now.
+		s.log.Debug("client: start")
 		return nil
 	case TypeAudioIn:
 		return s.handleAudioIn(ctx, env.Payload)
 	case TypeInterrupt:
 		// For now, treat interrupt as activity-end so Gemini stops generating.
 		// Future: drive an explicit barge-in via SendClientContent.
-		return s.gemini.SendRealtimeInput(genai.LiveRealtimeInput{
+		s.log.Debug("client: interrupt — sending AudioStreamEnd to gemini")
+		if err := s.gemini.SendRealtimeInput(genai.LiveRealtimeInput{
 			AudioStreamEnd: true,
-		})
+		}); err != nil {
+			s.log.Error("send AudioStreamEnd to gemini failed", "error", err.Error())
+			return err
+		}
+		return nil
 	case TypeEnd:
 		// Graceful shutdown: close the session root context.
+		s.log.Debug("client: end")
 		return io.EOF
 	case TypePing:
+		s.log.Debug("client: ping")
 		return s.writeJSON(Envelope{
 			V: ProtocolVersion,
 			Type: TypePong,
@@ -184,9 +206,11 @@ func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
 		})
 	case TypePong:
 		// Pong arrived within the deadline — clear the read deadline.
+		s.log.Debug("client: pong")
 		_ = s.ws.SetReadDeadline(time.Time{})
 		return nil
 	default:
+		s.log.Warn("client: unknown message type", "type", env.Type)
 		s.sendNonFatal(CodeBadMessage, "unknown message type: "+env.Type, nil)
 		return nil
 	}
@@ -197,25 +221,43 @@ func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
 func (s *Session) handleAudioIn(ctx context.Context, raw json.RawMessage) error {
 	var p AudioInPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
+		s.log.Warn("audio_in: invalid payload", "error", err.Error())
 		s.sendNonFatal(CodeBadMessage, "invalid audio_in payload", err)
 		return nil
 	}
 	if p.SampleRate != SampleRateIn || p.Encoding != Encoding || p.Channels != Channels {
+		s.log.Warn("audio_in: format mismatch",
+			"expected_sample_rate", SampleRateIn, "got_sample_rate", p.SampleRate,
+			"expected_encoding", Encoding, "got_encoding", p.Encoding,
+			"expected_channels", Channels, "got_channels", p.Channels)
 		s.sendNonFatal(CodeBadAudio, fmt.Sprintf("expected %dHz %s %dch, got %dHz %s %dch",
 			SampleRateIn, Encoding, Channels, p.SampleRate, p.Encoding, p.Channels), nil)
 		return nil
 	}
 	pcm, err := DecodePCMBase64(p.PCM)
 	if err != nil {
+		s.log.Warn("audio_in: decode pcm failed", "error", err.Error())
 		s.sendNonFatal(CodeBadAudio, "decode pcm failed", err)
 		return nil
 	}
+
+	frameNo := s.audioInFrames.Add(1)
+	if frameNo == 1 {
+		s.log.Info("audio_in: first frame received from browser",
+			"bytes", len(pcm), "duration_ms", p.DurationMs)
+	}
+	if frameNo == 1 || frameNo%50 == 0 {
+		s.log.Debug("audio_in: forwarding to gemini",
+			"frame_no", frameNo, "bytes", len(pcm), "duration_ms", p.DurationMs)
+	}
+
 	if err := s.gemini.SendRealtimeInput(genai.LiveRealtimeInput{
 		Audio: &genai.Blob{
-			MIMEType: "audio/pcm",
+			MIMEType: fmt.Sprintf("audio/pcm;rate=%d", SampleRateIn),
 			Data: pcm,
 		},
 	}); err != nil {
+		s.log.Error("send audio to gemini failed", "frame_no", s.audioInFrames, "error", err.Error())
 		return err
 	}
 	return nil
@@ -229,6 +271,7 @@ func (s *Session) pumpOut(ctx context.Context) error {
 		}
 		msg, err := s.gemini.Receive()
 		if err != nil {
+			s.log.Debug("gemini receive ended", "error", errString(err))
 			return err
 		}
 		if msg == nil {
@@ -244,14 +287,17 @@ func (s *Session) pumpOut(ctx context.Context) error {
 // browser frames.
 func (s *Session) handleServerMessage(ctx context.Context, msg *genai.LiveServerMessage) error {
 	if msg.SetupComplete != nil {
-		s.log.Debug("gemini setup complete")
+		s.log.Debug("gemini: setup complete")
 	}
 	if msg.GoAway != nil {
-		s.log.Info("gemini sent goaway")
+		s.log.Info("gemini: sent goaway")
 		return io.EOF
 	}
 	if msg.ServerContent != nil {
 		return s.handleServerContent(ctx, msg.ServerContent)
+	}
+	if msg.ToolCall != nil {
+		s.log.Debug("gemini: tool call (unhandled)")
 	}
 	return nil
 }
@@ -260,6 +306,8 @@ func (s *Session) handleServerMessage(ctx context.Context, msg *genai.LiveServer
 // turnComplete, interrupted, generationComplete.
 func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerContent) error {
 	if c.InputTranscription != nil {
+		s.log.Debug("gemini: input transcription",
+			"text", c.InputTranscription.Text, "finished", c.InputTranscription.Finished)
 		if err := s.sendTranscript(TranscriptPayload{
 			Role: RoleUser,
 			Text: c.InputTranscription.Text,
@@ -270,6 +318,8 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 		}
 	}
 	if c.OutputTranscription != nil {
+		s.log.Debug("gemini: output transcription",
+			"text", c.OutputTranscription.Text, "finished", c.OutputTranscription.Finished)
 		if err := s.sendTranscript(TranscriptPayload{
 			Role: RoleModel,
 			Text: c.OutputTranscription.Text,
@@ -280,11 +330,16 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 		}
 	}
 	if c.ModelTurn != nil {
+		s.log.Debug("gemini: model turn", "parts", len(c.ModelTurn.Parts))
 		for _, part := range c.ModelTurn.Parts {
 			if part.InlineData == nil {
+				s.log.Debug("gemini: model turn part has no inline data")
 				continue
 			}
+			s.log.Debug("gemini: model turn inline data",
+				"mime_type", part.InlineData.MIMEType, "bytes", len(part.InlineData.Data))
 			if !isAudioMime(part.InlineData.MIMEType) {
+				s.log.Debug("gemini: skipping non-audio inline data", "mime_type", part.InlineData.MIMEType)
 				continue
 			}
 			if err := s.sendAudioOut(AudioOutPayload{
@@ -300,12 +355,33 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 		}
 	}
 	if c.Interrupted {
+		s.log.Debug("gemini: interrupted")
 		if err := s.sendStatus(StatusPayload{State: StateInterrupted}); err != nil {
 			return err
 		}
 	}
 	if c.TurnComplete {
-		s.log.Debug("model turn complete")
+		s.log.Debug("gemini: model turn complete")
+		// TurnComplete arrives as its own ServerContent message, separate
+		// from the transcription/audio chunks. Forward it as an empty
+		// turnComplete marker for both roles so the client freezes the
+		// current turns and starts fresh entries for the next exchange.
+		if err := s.sendTranscript(TranscriptPayload{
+			Role: RoleModel,
+			Text: "",
+			TurnComplete: true,
+			TurnID: "t_model",
+		}); err != nil {
+			return err
+		}
+		if err := s.sendTranscript(TranscriptPayload{
+			Role: RoleUser,
+			Text: "",
+			TurnComplete: true,
+			TurnID: "t_user",
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -336,6 +412,33 @@ func (s *Session) heartbeatLoop(ctx context.Context, ticker *time.Ticker) error 
 			// above applies to ALL reads including the next pumpIn
 			// ReadMessage. We reset the deadline inside pumpIn after
 			// each successful read.
+		}
+	}
+}
+
+// audioInWatchdog logs a periodic summary of audio_in frames received from
+// the browser. This is the fastest way to tell, from the server side
+// alone, whether the browser's mic capture is sending anything at all —
+// if "received" stays at 0 after the first tick, the problem is in the
+// browser (mic permission, AudioContext/worklet, or the WS never reaching
+// "open"), not in the Gemini bridge.
+func (s *Session) audioInWatchdog(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	var last uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			total := s.audioInFrames.Load()
+			received := total - last
+			if received == 0 {
+				s.log.Warn("audio_in: no frames received from browser in last 2s", "total_frames", total)
+			} else {
+				s.log.Info("audio_in: heartbeat", "frames_last_2s", received, "total_frames", total)
+			}
+			last = total
 		}
 	}
 }
@@ -484,8 +587,20 @@ func errString(err error) string {
 	return err.Error()
 }
 
+// isAudioMime reports whether mime identifies PCM audio. Gemini sends
+// the sample rate as a parameter, e.g. "audio/pcm;rate=24000", so this
+// matches on the base type rather than an exact string.
 func isAudioMime(mime string) bool {
-	return mime == "audio/pcm" || mime == "audio/L16" || mime == "audio/l16" || mime == "audio/raw"
+	base := mime
+	if i := strings.IndexByte(mime, ';'); i >= 0 {
+		base = mime[:i]
+	}
+	switch strings.ToLower(strings.TrimSpace(base)) {
+	case "audio/pcm", "audio/l16", "audio/raw":
+		return true
+	default:
+		return false
+	}
 }
 
 // defaultSystemPrompt is the sent to Gemini. Intentionally
