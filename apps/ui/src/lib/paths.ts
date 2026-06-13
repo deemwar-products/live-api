@@ -36,6 +36,7 @@ export const BUSINESS = {
 export const CONSOLE = {
   home: "/console",
   onboarding: "/console/onboarding",
+ live: "/console/live",
   conversations: "/console/conversations",
   knowledge: "/console/knowledge",
   tools: "/console/tools",
