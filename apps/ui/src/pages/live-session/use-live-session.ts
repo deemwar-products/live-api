@@ -38,6 +38,7 @@ export function useLiveSession() {
 
  const start = useCallback(async () => {
  if (status === "connecting" || status === "live") return;
+ console.log("[live] start: connecting WS to", wsUrl());
  liveStore.reset();
  liveStore.setStatus("connecting");
  setError(null);
@@ -47,9 +48,11 @@ export function useLiveSession() {
 
  // ----- Server messages -----
  let ignoreUntil = 0;
+ let frameDebugCount = 0;
  const offMsg = client.onServerMessage((msg: ServerMsg) => {
  switch (msg.type) {
  case "ready":
+ console.log("[live] ready received, starting media", msg.payload);
  liveStore.setReady(msg.payload);
  liveStore.setStatus("live");
  // Start capture + playback after Ready.
@@ -111,13 +114,23 @@ export function useLiveSession() {
  });
 
  // Kick the session off; server is permissive — start is a no-op today.
- client.onOpen(() => client.sendStart({}));
+ client.onOpen(() => {
+ console.log("[live] WS open, sending start");
+ client.sendStart({});
+ });
 
  async function beginMedia() {
+ console.log("[live] beginMedia: requesting microphone");
  try {
  const capture = await startCapture({
  onFrame: (b64, durationMs) => {
  if (mutedRef.current) return;
+ if (frameDebugCount < 3) {
+ console.log(`[live] audio_in frame #${frameDebugCount++} bytes=${b64.length} durMs=${durationMs}`);
+ } else if (frameDebugCount === 3) {
+ console.log("[live] audio_in: further frames suppressed (set frameDebugCount=Infinity in console to re-enable)");
+ frameDebugCount = Infinity;
+ }
  clientRef.current?.sendAudioIn({
  pcm: b64,
  sampleRate: 16000,
@@ -143,13 +156,16 @@ export function useLiveSession() {
  window.setTimeout(() => liveStore.setMicActive(false), 400);
  },
  onError: (err) => {
+ console.error("[live] capture error", err);
  setError({ code: "mic_error", message: err.message });
  liveStore.setError({ code: "mic_error", message: err.message, fatal: false });
  },
  });
+ console.log("[live] capture started");
  captureRef.current = capture;
  } catch (e) {
  const message = e instanceof Error ? e.message : "microphone unavailable";
+ console.error("[live] capture failed", e);
  setError({ code: "mic_denied", message });
  liveStore.setError({ code: "mic_denied", message, fatal: false });
  // Don't tear down the WS — let the user see Gemini's text even without mic.
