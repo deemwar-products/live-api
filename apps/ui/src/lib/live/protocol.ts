@@ -132,7 +132,8 @@ export type ServerMsg =
  | Envelope<"audio_out", AudioOutPayload>
  | Envelope<"transcript", TranscriptPayload>
  | Envelope<"status", StatusPayload>
- | Envelope<"error", ErrorPayload>;
+ | Envelope<"error", ErrorPayload>
+ | Envelope<"ping", PingPayload>;
 
 export type ClientMsg =
  | Envelope<"start", StartPayload>

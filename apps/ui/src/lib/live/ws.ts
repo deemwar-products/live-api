@@ -68,6 +68,25 @@ export function connectLive(url: string): LiveClient {
  } catch {
  return; // ignore malformed frames; server logs the bad_message
  }
+ // Heartbeat: server pings us to keep the connection alive and to
+ // detect a dead client. Reply with pong on the same socket so the
+ // server's read deadline resets.
+ if (parsed.type === "ping") {
+ try {
+ ws.send(
+ JSON.stringify({
+ v: PROTOCOL_VERSION,
+ type: "pong",
+ id: newId(),
+ ts: Date.now(),
+ payload: {},
+ }),
+ );
+ } catch {
+ // socket is closing; the close handler will run.
+ }
+ return;
+ }
  serverHandlers.forEach((h) => h(parsed));
  });
 
