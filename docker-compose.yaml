@@ -1,0 +1,51 @@
+# Local Postgres for live-api-poc (pgvector + pg_cron).
+# Bound to 127.0.0.1 only — not exposed publicly from a dev laptop.
+# Brought up by `task db:start`.
+services:
+  postgres:
+    hostname: postgres
+    build:
+      context: ./infra/postgres
+      dockerfile: Dockerfile
+    image: live-api-poc-postgres-local:pg16
+    container_name: live-api-poc-postgres
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    restart: always
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/initdb:/docker-entrypoint-initdb.d
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=vector,pg_cron
+      - -c
+      - cron.database_name=${POSTGRES_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # pgAdmin — optional, started separately via `task pgadmin:start`.
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: live-api-poc-pgadmin
+    profiles: ["pgadmin"]
+    depends_on:
+      - postgres
+    ports:
+      - "127.0.0.1:5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL:-admin@admin.com}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD:-admin}
+    volumes:
+      - ./infra/pgadmin/servers.json:/pgadmin4/servers.json:ro
+
+volumes:
+  postgres_data:
