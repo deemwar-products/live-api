@@ -24,10 +24,30 @@
   }
   .mode-btn.active { background: white; color: #1a73e8; }
 
+  /* Gear button */
+  .gear-btn {
+    width: 32px; height: 32px; border-radius: 50%; border: none;
+    background: rgba(255,255,255,0.15); color: white; cursor: pointer;
+    font-size: 16px; display: flex; align-items: center; justify-content: center;
+    transition: background 0.2s; flex-shrink: 0;
+  }
+  .gear-btn:hover { background: rgba(255,255,255,0.25); }
+
+  /* Tools count badge */
+  .tools-badge {
+    display: none; align-items: center; gap: 5px;
+    background: rgba(255,255,255,0.15); border-radius: 12px;
+    padding: 4px 10px; font-size: 12px; color: rgba(255,255,255,0.9);
+    cursor: pointer; transition: background 0.2s;
+  }
+  .tools-badge:hover { background: rgba(255,255,255,0.25); }
+
   /* Connection status */
   .conn-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: rgba(255,255,255,0.8); }
   .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #ea4335; transition: background 0.3s; }
   .conn-dot.connected { background: #34a853; }
+  .conn-dot.reconnecting { background: #fbbc04; animation: dot-pulse 1s ease-in-out infinite; }
+  @keyframes dot-pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
   /* ── Panels ── */
   .panel { flex: 1; display: none; flex-direction: column; overflow: hidden; }
@@ -81,7 +101,6 @@
   .audio-panel { background: #0d1117; flex: 1; display: none; flex-direction: column; align-items: center; justify-content: center; position: relative; overflow: hidden; }
   .audio-panel.active { display: flex; }
 
-  /* Background ambient glow */
   .audio-bg-glow {
     position: absolute; inset: 0; pointer-events: none;
     background: radial-gradient(ellipse at center, rgba(26,115,232,0.08) 0%, transparent 70%);
@@ -90,7 +109,6 @@
   .audio-bg-glow.listening { background: radial-gradient(ellipse at center, rgba(234,67,53,0.12) 0%, transparent 70%); }
   .audio-bg-glow.speaking { background: radial-gradient(ellipse at center, rgba(52,168,83,0.12) 0%, transparent 70%); }
 
-  /* Mic orb */
   .mic-orb-wrap { position: relative; display: flex; align-items: center; justify-content: center; margin-bottom: 32px; }
   .mic-ring {
     position: absolute; border-radius: 50%; border: 2px solid rgba(234,67,53,0.3);
@@ -122,7 +140,6 @@
   }
   @keyframes speaking-pulse { 0%,100%{transform:scale(1)}50%{transform:scale(1.04)} }
 
-  /* Audio waveform (shown while listening) */
   .waveform { display: flex; align-items: center; gap: 4px; height: 40px; margin-bottom: 12px; opacity: 0; transition: opacity 0.3s; }
   .waveform.visible { opacity: 1; }
   .waveform .bar { width: 4px; background: #ea4335; border-radius: 2px; animation: wave-bar 0.8s ease-in-out infinite; }
@@ -140,14 +157,12 @@
   .audio-status.speaking { color: #34a853; }
   .audio-hint { font-size: 12px; color: #555; }
 
-  /* Live transcript feed */
   .live-transcript { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); width: 500px; max-width: 90vw; max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 0 8px; }
   .lt-line { font-size: 13px; padding: 6px 12px; border-radius: 12px; animation: fade-in 0.3s ease; }
   .lt-line.user { background: rgba(26,115,232,0.15); color: #90b8f8; align-self: flex-end; max-width: 80%; }
   .lt-line.gemini { background: rgba(52,168,83,0.12); color: #7dd4a0; align-self: flex-start; max-width: 80%; }
   @keyframes fade-in { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
 
-  /* Audio mode top toolbar */
   .audio-toolbar {
     position: absolute; top: 16px; right: 16px;
     display: flex; gap: 8px;
@@ -160,7 +175,20 @@
   .toolbar-btn:hover { background: rgba(255,255,255,0.12); color: white; }
   .toolbar-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
-  /* ── History Modal ── */
+  /* ── Tool activity toast ── */
+  .tool-toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: rgba(26,115,232,0.92); color: white;
+    padding: 8px 18px; border-radius: 20px; font-size: 13px; font-weight: 500;
+    z-index: 300; backdrop-filter: blur(6px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    white-space: nowrap;
+  }
+  .tool-toast.visible { opacity: 1; }
+  .tool-toast.error { background: rgba(234,67,53,0.92); }
+
+  /* ── Modals (shared) ── */
   .modal-overlay {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
     z-index: 100; align-items: flex-end; justify-content: center;
@@ -168,7 +196,7 @@
   .modal-overlay.open { display: flex; }
   .modal {
     background: white; border-radius: 16px 16px 0 0; width: 100%; max-width: 640px;
-    max-height: 75vh; display: flex; flex-direction: column;
+    max-height: 80vh; display: flex; flex-direction: column;
     animation: slide-up 0.3s ease;
   }
   @keyframes slide-up { from{transform:translateY(100%)} to{transform:translateY(0)} }
@@ -179,7 +207,9 @@
   .modal-header h2 { font-size: 16px; font-weight: 600; color: #1a1a1a; }
   .modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: #888; padding: 2px 6px; border-radius: 4px; }
   .modal-close:hover { background: #f5f5f5; }
-  .modal-body { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .modal-body { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 16px; }
+
+  /* ── History modal ── */
   .history-empty { color: #999; text-align: center; margin: 24px 0; font-size: 14px; }
   .history-entry { display: flex; flex-direction: column; }
   .history-entry.user { align-items: flex-end; }
@@ -188,6 +218,75 @@
   .history-bubble { padding: 10px 14px; border-radius: 16px; font-size: 14px; line-height: 1.5; max-width: 75%; }
   .history-entry.user .history-bubble { background: #e8f0fe; color: #1a56c4; border-bottom-right-radius: 4px; }
   .history-entry.gemini .history-bubble { background: #f1f3f4; color: #1a1a1a; border-bottom-left-radius: 4px; }
+
+  /* ── Settings modal ── */
+  .settings-section-title {
+    font-size: 12px; font-weight: 600; color: #5f6368; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 8px;
+  }
+  .mcp-servers-list { display: flex; flex-direction: column; gap: 10px; }
+  .mcp-server-card {
+    border: 1px solid #e8eaed; border-radius: 10px; padding: 12px;
+    display: flex; flex-direction: column; gap: 8px; position: relative;
+  }
+  .mcp-server-card .del-btn {
+    position: absolute; top: 8px; right: 8px;
+    background: none; border: none; cursor: pointer; color: #bbb; font-size: 16px;
+    padding: 2px 5px; border-radius: 4px; line-height: 1;
+  }
+  .mcp-server-card .del-btn:hover { color: #ea4335; background: #fce8e6; }
+  .mcp-input {
+    width: 100%; border: 1px solid #dadce0; border-radius: 8px;
+    padding: 8px 12px; font-size: 13px; font-family: inherit;
+    outline: none; transition: border-color 0.2s;
+  }
+  .mcp-input:focus { border-color: #1a73e8; }
+  .mcp-add-btn {
+    border: 1px dashed #dadce0; border-radius: 10px; padding: 10px;
+    background: none; cursor: pointer; color: #5f6368; font-size: 13px;
+    width: 100%; text-align: center; transition: all 0.2s;
+  }
+  .mcp-add-btn:hover { border-color: #1a73e8; color: #1a73e8; background: #f0f6ff; }
+  .mcp-server-default {
+    border: 1px solid #c8e6c9; border-radius: 10px; padding: 10px 12px;
+    background: #f1f8e9; display: flex; align-items: center; gap: 8px;
+  }
+  .mcp-server-default-icon { font-size: 16px; flex-shrink: 0; }
+  .mcp-server-default-info { flex: 1; min-width: 0; }
+  .mcp-server-default-name { font-size: 13px; font-weight: 600; color: #2e7d32; }
+  .mcp-server-default-url { font-size: 11px; color: #558b2f; word-break: break-all; }
+  .mcp-server-default-tag {
+    font-size: 10px; font-weight: 600; color: #2e7d32; background: #c8e6c9;
+    border-radius: 6px; padding: 2px 7px; white-space: nowrap; flex-shrink: 0;
+  }
+  .sys-instruction-input {
+    width: 100%; border: 1px solid #dadce0; border-radius: 10px;
+    padding: 10px 12px; font-size: 13px; font-family: inherit;
+    outline: none; resize: vertical; min-height: 80px; max-height: 160px;
+    transition: border-color 0.2s; line-height: 1.5;
+  }
+  .sys-instruction-input:focus { border-color: #1a73e8; }
+  .mcp-status-list { display: flex; flex-direction: column; gap: 6px; }
+  .mcp-status-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-radius: 8px; font-size: 13px;
+  }
+  .mcp-status-item.ok { background: #e6f4ea; color: #137333; }
+  .mcp-status-item.fail { background: #fce8e6; color: #c5221f; }
+  .mcp-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .mcp-status-item.ok .mcp-status-dot { background: #34a853; }
+  .mcp-status-item.fail .mcp-status-dot { background: #ea4335; }
+  .mcp-tool-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; padding-left: 16px; }
+  .mcp-tool-chip {
+    background: #f0f6ff; color: #1a56c4; border-radius: 8px;
+    padding: 2px 8px; font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .settings-save-btn {
+    background: #1a73e8; color: white; border: none; border-radius: 10px;
+    padding: 12px; font-size: 14px; font-weight: 500; cursor: pointer;
+    transition: background 0.2s; flex-shrink: 0;
+  }
+  .settings-save-btn:hover { background: #1558b0; }
 </style>
 </head>
 <body>
@@ -201,6 +300,10 @@
     <button class="mode-btn active" id="btn-text" onclick="switchMode('text')">Text</button>
     <button class="mode-btn" id="btn-audio" onclick="switchMode('audio')">Audio</button>
   </div>
+
+  <div class="tools-badge" id="tools-badge" onclick="openSettings()" title="Open settings to see active tools"></div>
+
+  <button class="gear-btn" onclick="openSettings()" title="Settings">⚙</button>
 
   <div class="conn-status">
     <div class="conn-dot" id="conn-dot"></div>
@@ -227,7 +330,7 @@
   <div class="audio-bg-glow" id="audio-glow"></div>
 
   <div class="audio-toolbar">
-    <button class="toolbar-btn" id="history-btn" onclick="openHistory()" disabled>📋 View History</button>
+    <button class="toolbar-btn" id="history-btn" onclick="openHistory()" disabled>📋 History</button>
     <button class="toolbar-btn" id="end-btn" onclick="endAudioSession()" disabled>End</button>
   </div>
 
@@ -249,6 +352,9 @@
   <div class="live-transcript" id="live-transcript"></div>
 </div>
 
+<!-- Tool activity toast -->
+<div class="tool-toast" id="tool-toast"></div>
+
 <!-- History Modal -->
 <div class="modal-overlay" id="history-modal">
   <div class="modal">
@@ -258,6 +364,39 @@
     </div>
     <div class="modal-body" id="history-body">
       <div class="history-empty">No conversation yet</div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>⚙ Settings</h2>
+      <button class="modal-close" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="modal-body">
+
+      <!-- MCP Servers -->
+      <div>
+        <div class="settings-section-title">MCP Servers</div>
+        <div class="mcp-servers-list" id="mcp-servers-list"></div>
+        <button class="mcp-add-btn" onclick="addMcpServer()" style="margin-top:8px">+ Add MCP Server</button>
+      </div>
+
+      <!-- System Instruction -->
+      <div>
+        <div class="settings-section-title">System Instruction</div>
+        <textarea class="sys-instruction-input" id="sys-instruction" placeholder="Optional: give Gemini a persona or specific instructions…"></textarea>
+      </div>
+
+      <!-- Connection Status (populated after connect) -->
+      <div id="mcp-status-section" style="display:none">
+        <div class="settings-section-title">Last Connection Status</div>
+        <div class="mcp-status-list" id="mcp-status-list"></div>
+      </div>
+
+      <button class="settings-save-btn" onclick="saveAndClose()">Save &amp; Reconnect</button>
     </div>
   </div>
 </div>
@@ -274,26 +413,220 @@
   var inputSampleRate  = 16000;
   var outputSampleRate = 24000;
 
-  // Web Audio API playback scheduler (gapless, autoplay-safe)
   var playbackCtx = null;
   var nextPlayTime = 0;
   var scheduledSources = 0;
-  var activeSources = [];   // AudioBufferSourceNodes in flight — stopped on interrupt
+  var activeSources = [];
 
-  // Conversation history (audio mode)
-  var conversationHistory = [];  // [{role, text}]
-  var audioChunksSent = [];
-  var audioChunksReceived = [];
+  var conversationHistory = [];
+  var toolToastTimer = null;
 
-  // ── Connection status ──────────────────────────────────────
+  // ── Reconnect state ─────────────────────────────────────────
+  var manualClose = false;        // true when WE close intentionally
+  var reconnectDelay = 1000;      // ms, doubles each attempt up to 30s
+  var reconnectTimer = null;
+  var reconnectCountdown = null;
+
+  function clearReconnect() {
+    clearTimeout(reconnectTimer);
+    clearInterval(reconnectCountdown);
+    reconnectTimer = null;
+    reconnectCountdown = null;
+  }
+
+  function scheduleReconnect(mode) {
+    clearReconnect();
+    var secs = Math.round(reconnectDelay / 1000);
+    var dot = document.getElementById('conn-dot');
+    var label = document.getElementById('conn-label');
+    dot.className = 'conn-dot reconnecting';
+    label.textContent = 'Reconnecting in ' + secs + 's…';
+    reconnectCountdown = setInterval(function () {
+      secs--;
+      if (secs > 0) label.textContent = 'Reconnecting in ' + secs + 's…';
+    }, 1000);
+    reconnectTimer = setTimeout(function () {
+      clearReconnect();
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+      openWs(mode);
+    }, reconnectDelay);
+  }
+
+  // ── Settings (persisted to localStorage) ───────────────────
+  var settings = { mcpServers: [], systemInstruction: '' };
+  // Server-preconfigured MCP servers (name+URL only, auth is server-side).
+  // Shown as read-only badges in settings; automatically connected on every session.
+  var serverDefaults = [];
+
+  function loadSettings() {
+    try {
+      var saved = localStorage.getItem('geminiLiveSettings');
+      if (saved) settings = JSON.parse(saved);
+    } catch (_) {}
+    renderMcpServers();
+    document.getElementById('sys-instruction').value = settings.systemInstruction || '';
+  }
+
+  function fetchDefaults(done) {
+    fetch('/api/defaults')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        serverDefaults = data.mcpServers || [];
+        renderMcpServers();
+        done();
+      })
+      .catch(function () { done(); });
+  }
+
+  function persistSettings() {
+    settings.systemInstruction = document.getElementById('sys-instruction').value;
+    try { localStorage.setItem('geminiLiveSettings', JSON.stringify(settings)); } catch (_) {}
+  }
+
+  function addMcpServer() {
+    settings.mcpServers.push({ name: '', url: '', auth: '' });
+    renderMcpServers();
+  }
+
+  function removeMcpServer(i) {
+    settings.mcpServers.splice(i, 1);
+    renderMcpServers();
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderMcpServers() {
+    var list = document.getElementById('mcp-servers-list');
+    list.innerHTML = '';
+
+    // Show server-preconfigured entries first (read-only, auth is server-side)
+    serverDefaults.forEach(function (srv) {
+      var card = document.createElement('div');
+      card.className = 'mcp-server-default';
+      card.innerHTML =
+        '<div class="mcp-server-default-icon">🔒</div>' +
+        '<div class="mcp-server-default-info">' +
+          '<div class="mcp-server-default-name">' + esc(srv.name) + '</div>' +
+          '<div class="mcp-server-default-url">' + esc(srv.url) + '</div>' +
+        '</div>' +
+        '<div class="mcp-server-default-tag">server-configured</div>';
+      list.appendChild(card);
+    });
+
+    // Then user-added entries
+    if (settings.mcpServers.length === 0 && serverDefaults.length === 0) {
+      list.innerHTML = '<div style="color:#999;font-size:13px;padding:8px 0">No MCP servers — click + Add to connect one.</div>';
+      return;
+    }
+    settings.mcpServers.forEach(function (srv, i) {
+      var card = document.createElement('div');
+      card.className = 'mcp-server-card';
+      card.innerHTML =
+        '<button class="del-btn" onclick="removeMcpServer(' + i + ')">✕</button>' +
+        '<input class="mcp-input" placeholder="Name (e.g. Notion)" value="' + esc(srv.name) + '" oninput="settings.mcpServers[' + i + '].name=this.value">' +
+        '<input class="mcp-input" placeholder="URL (https://mcp.example.com/mcp)" value="' + esc(srv.url) + '" oninput="settings.mcpServers[' + i + '].url=this.value">' +
+        '<input class="mcp-input" placeholder="Auth token (optional)" type="password" value="' + esc(srv.auth) + '" oninput="settings.mcpServers[' + i + '].auth=this.value">';
+      list.appendChild(card);
+    });
+  }
+
+  window.addMcpServer = addMcpServer;
+  window.removeMcpServer = removeMcpServer;
+
+  // ── Settings modal ──────────────────────────────────────────
+  window.openSettings = function () {
+    renderMcpServers();
+    document.getElementById('sys-instruction').value = settings.systemInstruction || '';
+    document.getElementById('settings-modal').className = 'modal-overlay open';
+  };
+
+  window.closeSettings = function () {
+    persistSettings();
+    document.getElementById('settings-modal').className = 'modal-overlay';
+  };
+
+  window.saveAndClose = function () {
+    persistSettings();
+    document.getElementById('settings-modal').className = 'modal-overlay';
+    // Reconnect so the new config takes effect
+    manualClose = true;
+    clearReconnect();
+    if (ws) { ws.close(); ws = null; }
+    openWs(currentMode);
+  };
+
+  function handleMcpStatus(servers) {
+    var section = document.getElementById('mcp-status-section');
+    var list = document.getElementById('mcp-status-list');
+    list.innerHTML = '';
+
+    var totalTools = 0;
+    servers.forEach(function (s) {
+      if (s.ok) totalTools += (s.tools || 0);
+
+      var item = document.createElement('div');
+      item.className = 'mcp-status-item ' + (s.ok ? 'ok' : 'fail');
+      var dot = document.createElement('div');
+      dot.className = 'mcp-status-dot';
+      var label = document.createElement('span');
+      label.textContent = s.ok
+        ? s.name + ' — ' + s.tools + ' tool' + (s.tools !== 1 ? 's' : '')
+        : s.name + ' — ' + (s.error || 'failed');
+      item.appendChild(dot);
+      item.appendChild(label);
+      list.appendChild(item);
+
+      // Tool name chips
+      if (s.ok && s.toolNames && s.toolNames.length > 0) {
+        var chips = document.createElement('div');
+        chips.className = 'mcp-tool-chips';
+        s.toolNames.forEach(function (name) {
+          var chip = document.createElement('span');
+          chip.className = 'mcp-tool-chip';
+          chip.textContent = name;
+          chips.appendChild(chip);
+        });
+        list.appendChild(chips);
+      }
+    });
+
+    section.style.display = 'block';
+
+    // Update the header tools badge
+    var badge = document.getElementById('tools-badge');
+    if (totalTools > 0) {
+      badge.textContent = '🔧 ' + totalTools + ' tool' + (totalTools !== 1 ? 's' : '');
+      badge.style.display = 'flex';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  // ── Tool activity toast ─────────────────────────────────────
+  function showToolToast(msg, isErr) {
+    clearTimeout(toolToastTimer);
+    var toast = document.getElementById('tool-toast');
+    toast.textContent = msg;
+    toast.className = 'tool-toast visible' + (isErr ? ' error' : '');
+  }
+
+  function hideToolToast(delay) {
+    toolToastTimer = setTimeout(function () {
+      document.getElementById('tool-toast').className = 'tool-toast';
+    }, delay || 0);
+  }
+
+  // ── Connection status ───────────────────────────────────────
   function setConnected(ok) {
     document.getElementById('conn-dot').className = 'conn-dot' + (ok ? ' connected' : '');
     document.getElementById('conn-label').textContent = ok ? 'Connected' : 'Disconnected';
     document.getElementById('send-btn').disabled = !ok;
   }
 
-  // ── Mode switching ─────────────────────────────────────────
-  window.switchMode = function(mode) {
+  // ── Mode switching ──────────────────────────────────────────
+  window.switchMode = function (mode) {
     if (mode === currentMode) return;
     currentMode = mode;
 
@@ -302,40 +635,76 @@
     document.getElementById('panel-text').className  = 'panel'       + (mode === 'text'  ? ' active' : '');
     document.getElementById('panel-audio').className = 'audio-panel' + (mode === 'audio' ? ' active' : '');
 
-    // Reconnect with correct config
-    if (ws) { ws.close(); ws = null; }
+    if (ws) { manualClose = true; clearReconnect(); ws.close(); ws = null; }
     stopRecording();
     openWs(mode);
   };
 
-  // ── WebSocket ──────────────────────────────────────────────
+  // ── WebSocket ───────────────────────────────────────────────
   function openWs(mode) {
-    ws = new WebSocket(WS_BASE + '?mode=' + mode);
+    manualClose = false;
+    ws = new WebSocket(WS_BASE);
 
     ws.onopen = function () {
+      reconnectDelay = 1000;  // reset backoff on successful connect
+      clearReconnect();
+      // Send the init handshake — server waits for this before starting Gemini.
+      ws.send(JSON.stringify({
+        type: 'init',
+        mode: mode,
+        systemInstruction: settings.systemInstruction || '',
+        mcpServers: settings.mcpServers.filter(function (s) { return s.url; })
+      }));
       setConnected(true);
       if (mode === 'audio') {
         document.getElementById('end-btn').disabled = false;
       }
     };
 
-    ws.onclose = function () {
+    ws.onclose = function (e) {
       setConnected(false);
       isRecording = false;
       setAudioState('idle');
       document.getElementById('end-btn').disabled = true;
+      document.getElementById('history-btn').disabled = conversationHistory.length === 0;
+      // Auto-reconnect unless this was a deliberate close (mode switch, End button, saveAndClose)
+      if (!manualClose) {
+        scheduleReconnect(mode);
+      }
     };
 
     ws.onerror = function () { setConnected(false); };
 
     ws.onmessage = function (evt) {
-      var data = JSON.parse(evt.data);
+      var data;
+      try { data = JSON.parse(evt.data); } catch (_) { return; }
+
+      // Intercept server meta-messages before delegating to mode handlers
+      if (data.type === 'mcpStatus') {
+        handleMcpStatus(data.servers || []);
+        return;
+      }
+      if (data.type === 'toolCall') {
+        showToolToast('🔧 ' + data.tool + '…');
+        return;
+      }
+      if (data.type === 'toolResult') {
+        if (data.ok) {
+          showToolToast('✓ ' + data.tool);
+          hideToolToast(1800);
+        } else {
+          showToolToast('✗ ' + data.tool + ': ' + (data.error || 'error'), true);
+          hideToolToast(3000);
+        }
+        return;
+      }
+
       if (currentMode === 'text') { handleTextMessage(data); }
       else                        { handleAudioMessage(data); }
     };
   }
 
-  // ── TEXT MODE ──────────────────────────────────────────────
+  // ── TEXT MODE ───────────────────────────────────────────────
   function handleTextMessage(data) {
     if (!data.serverContent) return;
     var sc = data.serverContent;
@@ -358,7 +727,6 @@
     var empty = document.getElementById('text-empty');
     if (empty) empty.remove();
 
-    // Merge consecutive gemini chunks into the last bubble
     var last = chat.lastElementChild;
     if (role === 'gemini' && last && last.classList.contains('bubble-row') && last.classList.contains('gemini')) {
       last.querySelector('.bubble').textContent += text;
@@ -392,64 +760,55 @@
     }));
   };
 
-  // Enter to send (Shift+Enter for newline)
   document.getElementById('text-input').addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.sendText(); }
   });
 
-  // Auto-resize textarea
   document.getElementById('text-input').addEventListener('input', function () {
     this.style.height = 'auto';
     this.style.height = Math.min(this.scrollHeight, 120) + 'px';
   });
 
-  // ── AUDIO MODE ─────────────────────────────────────────────
+  // ── AUDIO MODE ──────────────────────────────────────────────
   function handleAudioMessage(data) {
     if (!data.serverContent) return;
     var sc = data.serverContent;
 
-    // User speech → text
     if (sc.inputTranscription && sc.inputTranscription.text) {
       var txt = sc.inputTranscription.text.trim();
       if (txt) {
         addLiveTranscriptLine('user', txt);
         conversationHistory.push({ role: 'user', text: txt });
-        updateHistoryBtn();
+        document.getElementById('history-btn').disabled = false;
       }
     }
 
-    // Gemini response → text
     if (sc.outputTranscription && sc.outputTranscription.text) {
       var txt = sc.outputTranscription.text.trim();
       if (txt) {
         addLiveTranscriptLine('gemini', txt);
         conversationHistory.push({ role: 'gemini', text: txt });
-        updateHistoryBtn();
+        document.getElementById('history-btn').disabled = false;
       }
     }
 
-    // User interrupted Gemini mid-response — stop audio immediately
     if (sc.interrupted) {
       stopPlayback();
       setAudioState('listening');
       return;
     }
 
-    // Gemini audio chunks — schedule immediately via Web Audio API
     if (sc.modelTurn && sc.modelTurn.parts) {
       sc.modelTurn.parts.forEach(function (p) {
-        if (p.inlineData && p.inlineData.mimeType.startsWith('audio/pcm')) {
+        if (p.inlineData && p.inlineData.mimeType && p.inlineData.mimeType.startsWith('audio/pcm')) {
           var chunk = b64ToBytes(p.inlineData.data);
-          audioChunksReceived.push(chunk);
           setAudioState('speaking');
           scheduleAudioChunk(chunk);
         }
       });
     }
 
-    if (sc.turnComplete) {
-      audioChunksReceived = [];
-    }
+    if (sc.turnComplete) { /* audio scheduling handles idle transition */ }
   }
 
   function setAudioState(state) {
@@ -462,7 +821,6 @@
     orb.className = 'mic-orb' + (state === 'listening' ? ' listening' : state === 'speaking' ? ' speaking' : '');
     glow.className = 'audio-bg-glow' + (state === 'listening' ? ' listening' : state === 'speaking' ? ' speaking' : '');
     wf.className = 'waveform' + (state === 'listening' ? ' visible' : '');
-
     rings.forEach(function (r) { r.style.display = state === 'listening' ? 'block' : 'none'; });
 
     if (state === 'listening') {
@@ -486,33 +844,25 @@
     line.className = 'lt-line ' + role;
     line.textContent = (role === 'user' ? 'You: ' : 'Gemini: ') + text;
     feed.appendChild(line);
-    // Keep last 6 lines visible
     while (feed.children.length > 6) feed.removeChild(feed.firstChild);
     feed.scrollTop = feed.scrollHeight;
   }
 
-  function updateHistoryBtn() {
-    document.getElementById('history-btn').disabled = conversationHistory.length === 0;
-  }
-
   window.toggleRecording = function () {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    if (isRecording) { stopRecording(); }
-    else             { startRecording(); }
+    if (isRecording) { stopRecording(); } else { startRecording(); }
   };
 
-  // ── Web Audio playback ─────────────────────────────────────
+  // ── Web Audio playback ──────────────────────────────────────
   function getPlaybackCtx() {
-    if (!playbackCtx) {
-      playbackCtx = new AudioContext({ sampleRate: outputSampleRate });
-    }
+    if (!playbackCtx) playbackCtx = new AudioContext({ sampleRate: outputSampleRate });
     if (playbackCtx.state === 'suspended') playbackCtx.resume();
     return playbackCtx;
   }
 
   function scheduleAudioChunk(pcmBytes) {
     var ctx = getPlaybackCtx();
-    var samples = pcmBytes.length / 2;  // 16-bit PCM = 2 bytes per sample
+    var samples = pcmBytes.length / 2;
     var buf = ctx.createBuffer(1, samples, outputSampleRate);
     var channel = buf.getChannelData(0);
     var view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
@@ -522,7 +872,6 @@
     var source = ctx.createBufferSource();
     source.buffer = buf;
     source.connect(ctx.destination);
-    // Schedule right after previous chunk — never overlap, never gap
     var when = Math.max(ctx.currentTime + 0.02, nextPlayTime);
     source.start(when);
     nextPlayTime = when + buf.duration;
@@ -535,7 +884,6 @@
     };
   }
 
-  // Cancel all in-flight audio immediately (called on interrupt)
   function stopPlayback() {
     activeSources.forEach(function (s) { try { s.stop(); } catch (_) {} });
     activeSources = [];
@@ -544,7 +892,6 @@
   }
 
   function startRecording() {
-    // Unlock AudioContext on this user gesture so scheduled playback isn't blocked
     getPlaybackCtx();
     navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
       var ctx = new AudioContext({ sampleRate: inputSampleRate });
@@ -553,14 +900,15 @@
       processor.onaudioprocess = function (e) {
         var pcm = float32ToInt16(e.inputBuffer.getChannelData(0));
         if (ws && ws.readyState === WebSocket.OPEN) {
-          audioChunksSent.push(new Uint8Array(pcm.buffer));
-          ws.send(JSON.stringify({ audio: { data: toBase64(pcm.buffer), mimeType: 'audio/pcm' } }));
+          ws.send(JSON.stringify({ audio: { data: toBase64(pcm.buffer), mimeType: 'audio/pcm;rate=16000' } }));
         }
       };
       src.connect(processor);
       processor.connect(ctx.destination);
       isRecording = true;
       setAudioState('listening');
+    }).catch(function (err) {
+      console.error('mic error:', err);
     });
   }
 
@@ -571,13 +919,15 @@
   }
 
   window.endAudioSession = function () {
+    manualClose = true;
+    clearReconnect();
     stopRecording();
     if (ws) { ws.close(); ws = null; }
     setAudioState('idle');
     if (conversationHistory.length > 0) openHistory();
   };
 
-  // ── History Modal ──────────────────────────────────────────
+  // ── History Modal ───────────────────────────────────────────
   window.openHistory = function () {
     var body = document.getElementById('history-body');
     body.innerHTML = '';
@@ -605,39 +955,38 @@
     document.getElementById('history-modal').className = 'modal-overlay';
   };
 
-  // Close modal on backdrop click
   document.getElementById('history-modal').addEventListener('click', function (e) {
     if (e.target === this) closeHistory();
   });
 
-  // ── Audio utilities ────────────────────────────────────────
-  function merge(arrays) {
-    var n = arrays.reduce(function(a,e){return a+e.length;},0);
-    var out = new Uint8Array(n), off = 0;
-    arrays.forEach(function(a){out.set(a,off);off+=a.length;});
-    return out;
-  }
+  document.getElementById('settings-modal').addEventListener('click', function (e) {
+    if (e.target === this) closeSettings();
+  });
 
+  // ── Audio utilities ─────────────────────────────────────────
   function b64ToBytes(b64) {
     var bin = atob(b64), a = new Uint8Array(bin.length);
-    for (var i=0;i<bin.length;i++) a[i]=bin.charCodeAt(i);
+    for (var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
     return a;
   }
 
   function float32ToInt16(f) {
     var o = new Int16Array(f.length);
-    for (var i=0;i<f.length;i++) o[i]=Math.max(-32768,Math.min(32767,f[i]*32768));
+    for (var i = 0; i < f.length; i++) o[i] = Math.max(-32768, Math.min(32767, f[i] * 32768));
     return o;
   }
 
   function toBase64(buf) {
-    var b='', a=new Uint8Array(buf);
-    for (var i=0;i<a.length;i++) b+=String.fromCharCode(a[i]);
+    var b = '', a = new Uint8Array(buf);
+    for (var i = 0; i < a.length; i++) b += String.fromCharCode(a[i]);
     return btoa(b);
   }
 
-  // ── Boot ──────────────────────────────────────────────────
-  openWs('text');
+  // ── Boot ────────────────────────────────────────────────────
+  loadSettings();
+  // Fetch server-preconfigured defaults first, then open the WebSocket.
+  // This ensures the settings panel shows them before the first connection.
+  fetchDefaults(function () { openWs('text'); });
 })();
 </script>
 </body>

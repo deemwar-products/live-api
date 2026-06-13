@@ -13,7 +13,7 @@ tasks:
     desc: Run the Gemini Live API server (loads server/.env automatically)
     dir: server
     cmds:
-      - go run main.go
+      - go run .
     env:
       GEMINI_API_KEY: '{{.GEMINI_API_KEY}}'
 
@@ -22,7 +22,7 @@ tasks:
     dir: server
     cmds:
       - mkdir -p bin
-      - go build -o bin/server main.go
+      - go build -o bin/server .
     generates:
       - server/bin/server
 
