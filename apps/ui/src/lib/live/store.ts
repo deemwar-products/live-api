@@ -30,26 +30,36 @@ export interface SessionRecord {
  model?: string;
  startedAt?: number;
  endedAt?: number;
- lastStatus?: StatusState;
+ /** Last observed coarse status, including "idle". Slightly wider than
+ * the wire StatusState because the store has its own "idle" anchor. */
+ lastStatus?: "idle" | StatusState;
  lastError?: { code: string; message: string };
 }
 
 export interface LiveState {
  status: "idle" | "connecting" | "live" | "interrupted" | "ended";
+ subState: "idle" | "listening" | "speaking" | "paused" | "dropped";
  ready: ReadyPayload | null;
  transcript: TranscriptEntry[];
  session: SessionRecord;
  micMuted: boolean;
+ /** True while the mic VAD is reporting speech. Drives the waveform. */
+ micActive: boolean;
+ /** True while model audio_out frames are arriving. Drives the waveform. */
+ modelActive: boolean;
 }
 
 const STORAGE_KEY = "live-api:session";
 
 const initial: LiveState = {
  status: "idle",
+ subState: "idle",
  ready: null,
  transcript: [],
  session: {},
  micMuted: false,
+ micActive: false,
+ modelActive: false,
 };
 
 type Listener = (s: LiveState) => void;
@@ -86,7 +96,17 @@ class LiveStore {
  session.endedAt = Date.now();
  }
  session.lastStatus = status;
- this.setState({ status, session });
+
+ // Reconcile sub-state with coarse status so the pill always reads true.
+ let subState: LiveState["subState"] = this.state.subState;
+ if (status === "ended" || status === "idle" || status === "connecting") {
+ subState = status === "connecting" ? this.state.subState : "idle";
+ } else if (status === "live") {
+ subState = this.state.micMuted ? "paused" : "listening";
+ } else if (status === "interrupted") {
+ subState = this.state.micMuted ? "paused" : "dropped";
+ }
+ this.setState({ status, session, subState });
  }
 
  setReady(ready: ReadyPayload): void {
@@ -130,7 +150,92 @@ class LiveStore {
  }
 
  setMicMuted(muted: boolean): void {
- this.setState({ micMuted: muted });
+ // Mute flips sub-state to "paused" so the pill reflects reality. We only
+ // flip when the session is in a state that cares (live / interrupted) —
+ // the idle/ended states keep their subState untouched.
+ const cur = this.state;
+ const next: Partial<LiveState> = { micMuted: muted };
+ if (muted) next.micActive = false;
+ if (muted && (cur.status === "live" || cur.status === "interrupted")) {
+ next.subState = "paused";
+ } else if (!muted && cur.subState === "paused") {
+ next.subState = cur.status === "live" ? "listening" : "idle";
+ }
+ this.setState(next);
+ }
+
+ setMicActive(active: boolean): void {
+ if (this.state.micMuted) return;
+ if (this.state.micActive === active) return;
+ this.setState({ micActive: active });
+ }
+
+ setModelActive(active: boolean): void {
+ if (this.state.modelActive === active) return;
+ this.setState({ modelActive: active });
+ }
+
+ // ---------- sub-state helpers ----------
+
+ /**
+  * Mark that the model is producing audio. Called every time a new
+  * audio_out frame arrives. The sub-state moves to "speaking" if the
+  * session is live. Use clearModelAudio when audio stops for >300ms.
+  */
+ noteModelAudioActive(): void {
+ if (this.state.status !== "live") return;
+ if (this.state.subState === "speaking") return;
+ this.setState({ subState: "speaking" });
+ }
+
+ /**
+  * Mark that model audio has stopped (no new audio_out for ~300ms or
+  * the server signaled turnComplete / interrupted). Sub-state returns
+  * to "listening" unless muted or session is no longer live.
+  */
+ noteModelAudioIdle(): void {
+ if (this.state.subState !== "speaking") return;
+ const next = this.deriveListeningSubState();
+ this.setState({ subState: next });
+ }
+
+ /**
+  * Mark the user is currently speaking (VAD fired). Only used as a
+  * hint to flip the sub-state back to "listening" after a model turn.
+  */
+ noteUserActivity(): void {
+ if (this.state.micMuted) return;
+ if (this.state.status !== "live" && this.state.status !== "interrupted") return;
+ if (this.state.subState === "speaking") return;
+ this.setState({ subState: "listening" });
+ }
+
+ /**
+  * Server told us we were interrupted. Sub-state moves to "dropped"
+  * (the pill says "Interrupted — listening again").
+  */
+ noteInterrupted(): void {
+ this.setState({ subState: this.state.micMuted ? "paused" : "dropped" });
+ }
+
+ /**
+  * User-initiated interrupt via barge-in or stop button. Same effect
+  * as noteInterrupted from the UI's perspective.
+ */
+ noteClientInterrupt(): void {
+ this.noteInterrupted();
+ }
+
+ /**
+  * Derive the "what should the sub-state be when not speaking"
+  * answer from the current coarse status + mute.
+  */
+ private deriveListeningSubState(): "listening" | "paused" | "idle" {
+ if (this.state.status !== "live" && this.state.status !== "interrupted") {
+ return "idle";
+ }
+ if (this.state.micMuted) return "paused";
+ return "listening";
  }
 
  reset(): void {

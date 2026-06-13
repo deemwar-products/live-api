@@ -28,6 +28,10 @@ export const LIVE_SESSION_PAGE_LABELS = {
  statusLive: "Live",
  statusInterrupted: "Interrupted",
  statusEnded: "Ended",
+ subListening: "Listening",
+ subSpeaking: "Gemini is speaking",
+ subPaused: "Paused (muted)",
+ subDropped: "Interrupted — listening again",
  },
 
  controls: {

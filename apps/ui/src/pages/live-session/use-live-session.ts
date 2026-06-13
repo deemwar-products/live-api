@@ -46,6 +46,7 @@ export function useLiveSession() {
  clientRef.current = client;
 
  // ----- Server messages -----
+ let ignoreUntil = 0;
  const offMsg = client.onServerMessage((msg: ServerMsg) => {
  switch (msg.type) {
  case "ready":
@@ -54,15 +55,44 @@ export function useLiveSession() {
  // Start capture + playback after Ready.
  void beginMedia();
  break;
- case "audio_out":
- playbackRef.current?.enqueue(msg.payload.pcm);
+ case "audio_out": {
+ // Drop audio_out frames received during the post-interrupt ignore
+ // window so the queued model audio doesn't keep playing.
+ if (performance.now() < ignoreUntil) {
  break;
+ }
+ playbackRef.current?.enqueue(msg.payload.pcm);
+ liveStore.noteModelAudioActive();
+ liveStore.setModelActive(true);
+ // Mark "speaking" cleared shortly after the last frame; we'll reset
+ // the timer on every new frame.
+ scheduleModelIdle();
+ break;
+ }
  case "transcript":
  liveStore.appendTranscript(msg.payload);
+ // Once Gemini's first transcript chunk arrives, user has heard
+ // something — flag user activity to drop sub-state back to listening
+ // when model finishes.
+ if (msg.payload.role === "user") liveStore.noteUserActivity();
  break;
- case "status":
+ case "status": {
+ const prevStatus = liveStore.getState().status;
  liveStore.setStatus(msg.payload.state);
+ // Server told us we were interrupted: drop queued audio and
+ // start a brief ignore window for in-flight frames.
+ if (msg.payload.state === "interrupted" && prevStatus !== "interrupted") {
+ playbackRef.current?.stop();
+ playbackRef.current = null;
+ ignoreUntil = performance.now() + 500;
+ liveStore.noteInterrupted();
+ // Re-init playback so the next model turn can speak.
+ playbackRef.current = startPlayback();
+ } else if (msg.payload.state === "live" && prevStatus === "interrupted") {
+ // Server resumed us; sub-state already reconciled by setStatus.
+ }
  break;
+ }
  case "error": {
  const { fatal } = mapError(msg.payload);
  liveStore.setError(msg.payload);
@@ -84,11 +114,10 @@ export function useLiveSession() {
  client.onOpen(() => client.sendStart({}));
 
  async function beginMedia() {
- const muted = mutedRef.current;
  try {
  const capture = await startCapture({
  onFrame: (b64, durationMs) => {
- if (muted) return;
+ if (mutedRef.current) return;
  clientRef.current?.sendAudioIn({
  pcm: b64,
  sampleRate: 16000,
@@ -96,6 +125,22 @@ export function useLiveSession() {
  channels: 1,
  durationMs,
  });
+ },
+ onSpeechStart: () => {
+ // VAD fired — flip sub-state to listening unless the model is
+ // currently speaking, in which case barge in.
+ const sub = liveStore.getState().subState;
+ liveStore.setMicActive(true);
+ if (sub === "speaking" && !mutedRef.current) {
+ clientRef.current?.sendInterrupt({ reason: "user_barge_in" });
+ liveStore.noteClientInterrupt();
+ } else {
+ liveStore.noteUserActivity();
+ }
+ // Decay the active flag after a short window if no further speech fires.
+ // The worklet also posts a "silence" event after ~400ms; we mirror that
+ // here to keep the waveform snappy.
+ window.setTimeout(() => liveStore.setMicActive(false), 400);
  },
  onError: (err) => {
  setError({ code: "mic_error", message: err.message });
@@ -110,6 +155,18 @@ export function useLiveSession() {
  // Don't tear down the WS — let the user see Gemini's text even without mic.
  }
  playbackRef.current = startPlayback();
+ }
+
+ // modelIdleTimer debounces model-audio-stopped into a single sub-state
+ // flip. Reset on every audio_out frame.
+ let modelIdleTimer: number | null = null;
+ function scheduleModelIdle() {
+ if (modelIdleTimer != null) window.clearTimeout(modelIdleTimer);
+ modelIdleTimer = window.setTimeout(() => {
+ modelIdleTimer = null;
+ liveStore.noteModelAudioIdle();
+ liveStore.setModelActive(false);
+ }, 300);
  }
 
  function teardown() {

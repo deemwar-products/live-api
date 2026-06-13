@@ -54,19 +54,58 @@ export interface CaptureHandle {
 export interface CaptureCallbacks {
  /** Called every ~20 ms with a base64 PCM frame. */
  onFrame(b64Pcm: string, durationMs: number): void;
+ /**
+ * Called the first time in a while the mic crosses the speech
+ * threshold. Fires once per "speech onset" — re-arms only after a
+ * silence gap of ~400ms.
+ */
+ onSpeechStart?(): void;
  /** Called on getUserMedia or worklet failure. */
  onError(err: Error): void;
 }
 
 const PCM_WORKLET_SOURCE = `
+const SPEECH_RMS_THRESHOLD = 0.02;
+const SPEECH_END_FRAMES = 20; // ~400ms at 20ms/frame before re-arming
+
 class PCMEmitter extends AudioWorkletProcessor {
+ constructor() {
+ super();
+ this.silenceFrames = 0;
+ }
+
  process(inputs) {
  const input = inputs[0];
  if (!input || input.length === 0) return true;
  const channel = input[0];
  if (!channel) return true;
  // Copy because the underlying buffer is reused.
- this.port.postMessage(new Float32Array(channel));
+ const copy = new Float32Array(channel);
+
+ // RMS over this render quantum (128 samples at 16kHz ≈ 8ms).
+ let sumSq = 0;
+ for (let i = 0; i < copy.length; i++) sumSq += copy[i] * copy[i];
+ const rms = Math.sqrt(sumSq / copy.length);
+
+ let isSpeech = false;
+ if (rms >= SPEECH_RMS_THRESHOLD) {
+ this.silenceFrames = 0;
+ isSpeech = true;
+ } else {
+ this.silenceFrames += 1;
+ // Re-arm: only after ~400ms of silence will we fire another onset.
+ if (this.silenceFrames === SPEECH_END_FRAMES) {
+ // Tell the main thread that speech ended, so it can update UI.
+ this.port.postMessage({ kind: "silence" });
+ }
+ }
+ if (isSpeech && this.silenceFrames === 0) {
+ // Emit "speech" only on the rising edge of a speech burst — the
+ // main thread ignores subsequent speech messages until silence
+ // arrives, so this naturally debounces.
+ this.port.postMessage({ kind: "speech" });
+ }
+ this.port.postMessage({ kind: "pcm", buffer: copy });
  }
 }
 registerProcessor("pcm-emitter", PCMEmitter);
@@ -96,8 +135,15 @@ export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle>
  let buffer = new Float32Array(samplesPerFrame * 4);
  let buffered = 0;
 
- node.port.onmessage = (ev: MessageEvent<Float32Array>) => {
- const chunk = ev.data;
+ node.port.onmessage = (ev: MessageEvent<{ kind: string; buffer?: Float32Array }>) => {
+ const msg = ev.data;
+ if (msg.kind === "speech") {
+ cb.onSpeechStart?.();
+ return;
+ }
+ if (msg.kind !== "pcm" || !msg.buffer) return;
+
+ const chunk = msg.buffer;
  const needed = samplesPerFrame;
  if (buffered + chunk.length < needed) {
  // Grow buffer if needed.

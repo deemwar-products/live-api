@@ -81,7 +81,9 @@ export type ErrorCode =
  | "gemini_disconnected"
  | "session_timeout"
  | "rate_limited"
- | "internal";
+ | "internal"
+ | "mic_denied"
+ | "mic_error";
 
 export interface ErrorPayload {
  code: ErrorCode;
@@ -105,7 +107,10 @@ export interface AudioInPayload {
 }
 
 export interface InterruptPayload {
- turnId: string;
+ // Optional: which model turn we're interrupting. The server uses
+ // Gemini's stream-level interrupt; UI doesn't need to set this.
+ turnId?: string;
+ reason?: "user_barge_in" | "user_stop";
 }
 
 export interface EndPayload {
