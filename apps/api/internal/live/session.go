@@ -43,10 +43,16 @@ type Session struct {
 	writeMu sync.Mutex
 
 	// audioInFrames counts audio_in frames received from the browser.
-	// Used to throttle debug logging of the (otherwise ~50/s) audio stream,
-	// and watched by audioInWatchdog to confirm the browser is sending
-	// audio at all.
+	// Watched by audioInWatchdog (a separate goroutine) to confirm the
+	// browser is sending audio at all.
 	audioInFrames atomic.Uint64
+
+	// Counters for periodic log summaries — only touched from the
+	// pumpIn/pumpOut goroutines, so no atomics needed.
+	audioInCount int
+	audioInBytes int
+	audioOutCount int
+	audioOutBytes int
 }
 
 // NewSession opens the upstream Gemini Live connection and returns a
@@ -173,6 +179,7 @@ func (s *Session) pumpIn(ctx context.Context) error {
 
 // handleClientMessage dispatches based on the envelope's Type field.
 func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
+	s.log.Debug("client message", "type", env.Type, "id", env.ID, "payload_bytes", len(env.Payload))
 	switch env.Type {
 	case TypeStart:
 		// Session is already live after Run begins; start is a no-op for now.
@@ -183,7 +190,7 @@ func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
 	case TypeInterrupt:
 		// For now, treat interrupt as activity-end so Gemini stops generating.
 		// Future: drive an explicit barge-in via SendClientContent.
-		s.log.Debug("client: interrupt — sending AudioStreamEnd to gemini")
+		s.log.Info("client: interrupt received — sending AudioStreamEnd to gemini", "id", env.ID)
 		if err := s.gemini.SendRealtimeInput(genai.LiveRealtimeInput{
 			AudioStreamEnd: true,
 		}); err != nil {
@@ -193,10 +200,10 @@ func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
 		return nil
 	case TypeEnd:
 		// Graceful shutdown: close the session root context.
-		s.log.Debug("client: end")
+		s.log.Info("client: end received", "id", env.ID)
 		return io.EOF
 	case TypePing:
-		s.log.Debug("client: ping")
+		s.log.Debug("client: ping", "id", env.ID)
 		return s.writeJSON(Envelope{
 			V: ProtocolVersion,
 			Type: TypePong,
@@ -206,8 +213,8 @@ func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
 		})
 	case TypePong:
 		// Pong arrived within the deadline — clear the read deadline.
-		s.log.Debug("client: pong")
 		_ = s.ws.SetReadDeadline(time.Time{})
+		s.log.Debug("client: pong", "id", env.ID)
 		return nil
 	default:
 		s.log.Warn("client: unknown message type", "type", env.Type)
@@ -240,24 +247,29 @@ func (s *Session) handleAudioIn(ctx context.Context, raw json.RawMessage) error 
 		s.sendNonFatal(CodeBadAudio, "decode pcm failed", err)
 		return nil
 	}
-
 	frameNo := s.audioInFrames.Add(1)
+	s.audioInCount++
+	s.audioInBytes += len(pcm)
 	if frameNo == 1 {
 		s.log.Info("audio_in: first frame received from browser",
 			"bytes", len(pcm), "duration_ms", p.DurationMs)
 	}
-	if frameNo == 1 || frameNo%50 == 0 {
-		s.log.Debug("audio_in: forwarding to gemini",
-			"frame_no", frameNo, "bytes", len(pcm), "duration_ms", p.DurationMs)
+	// Per-frame debug is too noisy (50/sec), so log a summary every ~1s.
+	if s.audioInCount%50 == 1 {
+		s.log.Info("audio_in summary",
+			"frames", s.audioInCount,
+			"bytes", s.audioInBytes,
+			"last_frame_bytes", len(pcm),
+			"sample_rate", p.SampleRate,
+		)
 	}
-
 	if err := s.gemini.SendRealtimeInput(genai.LiveRealtimeInput{
 		Audio: &genai.Blob{
 			MIMEType: fmt.Sprintf("audio/pcm;rate=%d", SampleRateIn),
 			Data: pcm,
 		},
 	}); err != nil {
-		s.log.Error("send audio to gemini failed", "frame_no", s.audioInFrames, "error", err.Error())
+		s.log.Error("send audio to gemini failed", "frame_no", frameNo, "error", err.Error())
 		return err
 	}
 	return nil
@@ -277,6 +289,11 @@ func (s *Session) pumpOut(ctx context.Context) error {
 		if msg == nil {
 			continue
 		}
+		s.log.Debug("gemini message received",
+			"setup_complete", msg.SetupComplete != nil,
+			"goaway", msg.GoAway != nil,
+			"server_content", msg.ServerContent != nil,
+		)
 		if err := s.handleServerMessage(ctx, msg); err != nil {
 			return err
 		}
@@ -287,7 +304,7 @@ func (s *Session) pumpOut(ctx context.Context) error {
 // browser frames.
 func (s *Session) handleServerMessage(ctx context.Context, msg *genai.LiveServerMessage) error {
 	if msg.SetupComplete != nil {
-		s.log.Debug("gemini: setup complete")
+		s.log.Info("gemini: setup complete")
 	}
 	if msg.GoAway != nil {
 		s.log.Info("gemini: sent goaway")
@@ -306,8 +323,10 @@ func (s *Session) handleServerMessage(ctx context.Context, msg *genai.LiveServer
 // turnComplete, interrupted, generationComplete.
 func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerContent) error {
 	if c.InputTranscription != nil {
-		s.log.Debug("gemini: input transcription",
-			"text", c.InputTranscription.Text, "finished", c.InputTranscription.Finished)
+		s.log.Info("gemini: input transcription",
+			"text", truncate(c.InputTranscription.Text, 120),
+			"finished", c.InputTranscription.Finished,
+		)
 		if err := s.sendTranscript(TranscriptPayload{
 			Role: RoleUser,
 			Text: c.InputTranscription.Text,
@@ -318,8 +337,10 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 		}
 	}
 	if c.OutputTranscription != nil {
-		s.log.Debug("gemini: output transcription",
-			"text", c.OutputTranscription.Text, "finished", c.OutputTranscription.Finished)
+		s.log.Info("gemini: output transcription",
+			"text", truncate(c.OutputTranscription.Text, 120),
+			"finished", c.OutputTranscription.Finished,
+		)
 		if err := s.sendTranscript(TranscriptPayload{
 			Role: RoleModel,
 			Text: c.OutputTranscription.Text,
@@ -339,8 +360,26 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 			s.log.Debug("gemini: model turn inline data",
 				"mime_type", part.InlineData.MIMEType, "bytes", len(part.InlineData.Data))
 			if !isAudioMime(part.InlineData.MIMEType) {
-				s.log.Debug("gemini: skipping non-audio inline data", "mime_type", part.InlineData.MIMEType)
+				s.log.Debug("gemini: skipping non-audio inline data",
+					"mime_type", part.InlineData.MIMEType,
+					"bytes", len(part.InlineData.Data),
+				)
 				continue
+			}
+			s.audioOutCount++
+			s.audioOutBytes += len(part.InlineData.Data)
+			if s.audioOutCount <= 3 {
+				s.log.Info("audio_out first chunk",
+					"chunks", s.audioOutCount,
+					"bytes", s.audioOutBytes,
+					"last_chunk_bytes", len(part.InlineData.Data),
+				)
+			} else if s.audioOutCount%25 == 1 {
+				s.log.Info("audio_out summary",
+					"chunks", s.audioOutCount,
+					"bytes", s.audioOutBytes,
+					"last_chunk_bytes", len(part.InlineData.Data),
+				)
 			}
 			if err := s.sendAudioOut(AudioOutPayload{
 				PCM: EncodePCMBase64(part.InlineData.Data),
@@ -353,15 +392,18 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 				return err
 			}
 		}
+		if len(c.ModelTurn.Parts) == 0 {
+			s.log.Debug("model turn with no parts")
+		}
 	}
 	if c.Interrupted {
-		s.log.Debug("gemini: interrupted")
+		s.log.Info("gemini: interrupted")
 		if err := s.sendStatus(StatusPayload{State: StateInterrupted}); err != nil {
 			return err
 		}
 	}
 	if c.TurnComplete {
-		s.log.Debug("gemini: model turn complete")
+		s.log.Info("gemini: model turn complete")
 		// TurnComplete arrives as its own ServerContent message, separate
 		// from the transcription/audio chunks. Forward it as an empty
 		// turnComplete marker for both roles so the client freezes the
@@ -384,6 +426,14 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 		}
 	}
 	return nil
+}
+
+// truncate shortens a string for log output, with an ellipsis if cut.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // heartbeatLoop sends periodic pings and tears down the session if the
@@ -607,4 +657,4 @@ func isAudioMime(mime string) bool {
 // minimal — POC scope is plain conversation.
 const defaultSystemPrompt = "You are a concise, friendly voice assistant for an internal demo. " +
 	"Keep replies short (1-3 sentences) and natural for spoken conversation. " +
-	" give at most 3 items unless they ask for more."
+	"When listing, give at most 3 items unless they ask for more."

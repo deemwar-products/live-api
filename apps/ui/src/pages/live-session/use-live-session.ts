@@ -39,6 +39,7 @@ export function useLiveSession() {
 
  const start = useCallback(async () => {
  if (status === "connecting" || status === "live") return;
+ console.log("[live] start: connecting WS to", wsUrl());
  liveStore.reset();
  liveStore.setStatus("connecting");
  setError(null);
@@ -51,6 +52,7 @@ export function useLiveSession() {
  let ignoreUntil = 0;
  let audioOutFrames = 0;
  let audioInFrames = 0;
+ let frameDebugCount = 0;
  const offMsg = client.onServerMessage((msg: ServerMsg) => {
  switch (msg.type) {
  case "ready":
@@ -148,6 +150,12 @@ export function useLiveSession() {
  logger.info("live: audio_in", { frame: audioInFrames, bytes: b64.length, durationMs });
  }
  if (mutedRef.current) return;
+ if (frameDebugCount < 3) {
+ console.log(`[live] audio_in frame #${frameDebugCount++} bytes=${b64.length} durMs=${durationMs}`);
+ } else if (frameDebugCount === 3) {
+ console.log("[live] audio_in: further frames suppressed (set frameDebugCount=Infinity in console to re-enable)");
+ frameDebugCount = Infinity;
+ }
  clientRef.current?.sendAudioIn({
  pcm: b64,
  sampleRate: 16000,
@@ -179,6 +187,7 @@ export function useLiveSession() {
  liveStore.setError({ code: "mic_error", message: err.message, fatal: false });
  },
  });
+ console.log("[live] capture started");
  captureRef.current = capture;
  logger.info("live: microphone capture started");
  } catch (e) {

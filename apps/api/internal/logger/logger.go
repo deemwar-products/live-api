@@ -27,19 +27,20 @@ var sensitiveKeySubstrings = []string{
 	"secret",
 }
 
-// New returns a JSON slog.Logger writing to stderr. The level defaults
-// to info but can be lowered to debug via LOG_LEVEL=debug — useful for
-// tracing the audio_in/audio_out pipeline during local debugging.
+// New returns a JSON slog.Logger writing to stderr. Level is read from
+// the LOG_LEVEL env var (one of: debug, info, warn, error). Default
+// is info. Suitable for containerized/local dev.
 func New() *slog.Logger {
-	h := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: levelFromEnv()})
-	return slog.New(h)
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: parseLogLevel(os.Getenv("LOG_LEVEL")),
+	}))
 }
 
-func levelFromEnv() slog.Level {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
 		return slog.LevelDebug
-	case "warn":
+	case "warn", "warning":
 		return slog.LevelWarn
 	case "error":
 		return slog.LevelError
