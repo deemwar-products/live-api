@@ -39,6 +39,12 @@ type Session struct {
 	// writeMu serialises writes to the browser WS. Gorilla requires
 	// exactly one writer at a time.
 	writeMu sync.Mutex
+
+	// Counters for log summaries.
+	audioInCount int
+	audioInBytes int
+	audioOutCount int
+	audioOutBytes int
 }
 
 // NewSession opens the upstream Gemini Live connection and returns a
@@ -159,6 +165,7 @@ func (s *Session) pumpIn(ctx context.Context) error {
 
 // handleClientMessage dispatches based on the envelope's Type field.
 func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
+	s.log.Debug("client message", "type", env.Type, "id", env.ID, "payload_bytes", len(env.Payload))
 	switch env.Type {
 	case TypeStart:
 		// Session is already live after Run begins; start is a no-op for now.
@@ -168,13 +175,16 @@ func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
 	case TypeInterrupt:
 		// For now, treat interrupt as activity-end so Gemini stops generating.
 		// Future: drive an explicit barge-in via SendClientContent.
+		s.log.Info("client interrupt received", "id", env.ID)
 		return s.gemini.SendRealtimeInput(genai.LiveRealtimeInput{
 			AudioStreamEnd: true,
 		})
 	case TypeEnd:
+		s.log.Info("client end received", "id", env.ID)
 		// Graceful shutdown: close the session root context.
 		return io.EOF
 	case TypePing:
+		s.log.Debug("client ping", "id", env.ID)
 		return s.writeJSON(Envelope{
 			V: ProtocolVersion,
 			Type: TypePong,
@@ -185,6 +195,7 @@ func (s *Session) handleClientMessage(ctx context.Context, env Envelope) error {
 	case TypePong:
 		// Pong arrived within the deadline — clear the read deadline.
 		_ = s.ws.SetReadDeadline(time.Time{})
+		s.log.Debug("client pong", "id", env.ID)
 		return nil
 	default:
 		s.sendNonFatal(CodeBadMessage, "unknown message type: "+env.Type, nil)
@@ -210,6 +221,17 @@ func (s *Session) handleAudioIn(ctx context.Context, raw json.RawMessage) error 
 		s.sendNonFatal(CodeBadAudio, "decode pcm failed", err)
 		return nil
 	}
+	s.audioInCount++
+	s.audioInBytes += len(pcm)
+	// Per-frame debug is too noisy (50/sec), so log a summary every ~1s.
+	if s.audioInCount%50 == 1 {
+		s.log.Info("audio_in summary",
+			"frames", s.audioInCount,
+			"bytes", s.audioInBytes,
+			"last_frame_bytes", len(pcm),
+			"sample_rate", p.SampleRate,
+		)
+	}
 	if err := s.gemini.SendRealtimeInput(genai.LiveRealtimeInput{
 		Audio: &genai.Blob{
 			MIMEType: "audio/pcm",
@@ -234,6 +256,11 @@ func (s *Session) pumpOut(ctx context.Context) error {
 		if msg == nil {
 			continue
 		}
+		s.log.Debug("gemini message received",
+			"setup_complete", msg.SetupComplete != nil,
+			"goaway", msg.GoAway != nil,
+			"server_content", msg.ServerContent != nil,
+		)
 		if err := s.handleServerMessage(ctx, msg); err != nil {
 			return err
 		}
@@ -244,7 +271,7 @@ func (s *Session) pumpOut(ctx context.Context) error {
 // browser frames.
 func (s *Session) handleServerMessage(ctx context.Context, msg *genai.LiveServerMessage) error {
 	if msg.SetupComplete != nil {
-		s.log.Debug("gemini setup complete")
+		s.log.Info("gemini setup complete")
 	}
 	if msg.GoAway != nil {
 		s.log.Info("gemini sent goaway")
@@ -260,6 +287,10 @@ func (s *Session) handleServerMessage(ctx context.Context, msg *genai.LiveServer
 // turnComplete, interrupted, generationComplete.
 func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerContent) error {
 	if c.InputTranscription != nil {
+		s.log.Info("input transcription",
+			"text", truncate(c.InputTranscription.Text, 120),
+			"finished", c.InputTranscription.Finished,
+		)
 		if err := s.sendTranscript(TranscriptPayload{
 			Role: RoleUser,
 			Text: c.InputTranscription.Text,
@@ -270,6 +301,10 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 		}
 	}
 	if c.OutputTranscription != nil {
+		s.log.Info("output transcription",
+			"text", truncate(c.OutputTranscription.Text, 120),
+			"finished", c.OutputTranscription.Finished,
+		)
 		if err := s.sendTranscript(TranscriptPayload{
 			Role: RoleModel,
 			Text: c.OutputTranscription.Text,
@@ -287,6 +322,15 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 			if !isAudioMime(part.InlineData.MIMEType) {
 				continue
 			}
+			s.audioOutCount++
+			s.audioOutBytes += len(part.InlineData.Data)
+			if s.audioOutCount%25 == 1 {
+				s.log.Info("audio_out summary",
+					"chunks", s.audioOutCount,
+					"bytes", s.audioOutBytes,
+					"last_chunk_bytes", len(part.InlineData.Data),
+				)
+			}
 			if err := s.sendAudioOut(AudioOutPayload{
 				PCM: EncodePCMBase64(part.InlineData.Data),
 				SampleRate: SampleRateOut,
@@ -300,14 +344,23 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 		}
 	}
 	if c.Interrupted {
+		s.log.Info("model interrupted by gemini")
 		if err := s.sendStatus(StatusPayload{State: StateInterrupted}); err != nil {
 			return err
 		}
 	}
 	if c.TurnComplete {
-		s.log.Debug("model turn complete")
+		s.log.Info("model turn complete")
 	}
 	return nil
+}
+
+// truncate shortens a string for log output, with an ellipsis if cut.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // heartbeatLoop sends periodic pings and tears down the session if the
@@ -492,4 +545,4 @@ func isAudioMime(mime string) bool {
 // minimal — POC scope is plain conversation.
 const defaultSystemPrompt = "You are a concise, friendly voice assistant for an internal demo. " +
 	"Keep replies short (1-3 sentences) and natural for spoken conversation. " +
-	" give at most 3 items unless they ask for more."
+	"When listing, give at most 3 items unless they ask for more."
