@@ -67,13 +67,18 @@ export interface CaptureCallbacks {
 const PCM_WORKLET_SOURCE = `
 const SPEECH_RMS_THRESHOLD = 0.02;
 const SPEECH_END_FRAMES = 20; // ~400ms at 20ms/frame before re-arming
+const TARGET_RATE = 16000;
+const FRAME_MS = 20;
+const SAMPLES_PER_FRAME = TARGET_RATE * FRAME_MS / 1000; // 320
 
 class PCMEmitter extends AudioWorkletProcessor {
  constructor() {
  super();
  this.silenceFrames = 0;
  this.frameCount = 0;
- // Tell the main thread we're alive.
+ this.buffer = new Float32Array(0);
+ this.outBuffer = new Float32Array(SAMPLES_PER_FRAME * 4);
+ this.outBuffered = 0;
  this.port.postMessage({ kind: "ready" });
  }
 
@@ -84,12 +89,34 @@ class PCMEmitter extends AudioWorkletProcessor {
  if (!channel) return true;
  this.frameCount++;
  if (this.frameCount === 1 || this.frameCount % 250 === 0) {
- this.port.postMessage({ kind: "tick", frame: this.frameCount });
+ this.port.postMessage({ kind: "tick", frame: this.frameCount, ctxRate: sampleRate });
  }
- // Copy because the underlying buffer is reused.
- const copy = new Float32Array(channel);
 
- // RMS over this render quantum (128 samples at 16kHz ≈ 8ms).
+ // Resample from sampleRate to 16000 by simple decimation-by-3 if
+ // we are at 48000. If the context is already at 16k, this is a no-op.
+ const ratio = sampleRate / TARGET_RATE;
+ let copy;
+ if (Math.abs(ratio - 1) < 0.01) {
+ copy = new Float32Array(channel);
+ } else if (Math.abs(ratio - 3) < 0.05) {
+ // 48k -> 16k: take every 3rd sample.
+ const len = Math.floor(channel.length / ratio);
+ copy = new Float32Array(len);
+ for (let i = 0; i < len; i++) copy[i] = channel[Math.floor(i * ratio)];
+ } else {
+ // Generic linear interpolation fallback.
+ const len = Math.floor(channel.length / ratio);
+ copy = new Float32Array(len);
+ for (let i = 0; i < len; i++) {
+ const srcIdx = i * ratio;
+ const lo = Math.floor(srcIdx);
+ const hi = Math.min(lo + 1, channel.length - 1);
+ const frac = srcIdx - lo;
+ copy[i] = channel[lo] * (1 - frac) + channel[hi] * frac;
+ }
+ }
+
+ // RMS on the resampled block.
  let sumSq = 0;
  for (let i = 0; i < copy.length; i++) sumSq += copy[i] * copy[i];
  const rms = Math.sqrt(sumSq / copy.length);
@@ -100,25 +127,37 @@ class PCMEmitter extends AudioWorkletProcessor {
  isSpeech = true;
  } else {
  this.silenceFrames += 1;
- // Re-arm: only after ~400ms of silence will we fire another onset.
  if (this.silenceFrames === SPEECH_END_FRAMES) {
- // Tell the main thread that speech ended, so it can update UI.
  this.port.postMessage({ kind: "silence" });
  }
  }
  if (isSpeech && this.silenceFrames === 0) {
- // Emit "speech" only on the rising edge of a speech burst — the
- // main thread ignores subsequent speech messages until silence
- // arrives, so this naturally debounces.
  this.port.postMessage({ kind: "speech" });
  }
- this.port.postMessage({ kind: "pcm", buffer: copy });
+
+ // Accumulate into outBuffer and emit fixed-size frames.
+ if (this.outBuffered + copy.length > this.outBuffer.length) {
+ const grown = new Float32Array(Math.max(this.outBuffer.length * 2, this.outBuffered + copy.length));
+ grown.set(this.outBuffer.subarray(0, this.outBuffered));
+ this.outBuffer = grown;
+ }
+ this.outBuffer.set(copy, this.outBuffered);
+ this.outBuffered += copy.length;
+
+ while (this.outBuffered >= SAMPLES_PER_FRAME) {
+ const frame = this.outBuffer.slice(0, SAMPLES_PER_FRAME);
+ this.port.postMessage({ kind: "pcm", buffer: frame });
+ this.outBuffer.copyWithin(0, SAMPLES_PER_FRAME, this.outBuffered);
+ this.outBuffered -= SAMPLES_PER_FRAME;
+ }
+ return true;
  }
 }
 registerProcessor("pcm-emitter", PCMEmitter);
 `;
 
 export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle> {
+ console.log("[live] startCapture: beginning mic request");
  const stream = await navigator.mediaDevices.getUserMedia({
  audio: {
  sampleRate: SAMPLE_RATE_IN,
@@ -127,6 +166,7 @@ export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle>
  noiseSuppression: true,
  },
  });
+ console.log("[live] getUserMedia granted");
 
  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE_IN });
  // The AudioContext may start suspended; resume it so the worklet
@@ -135,17 +175,17 @@ export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle>
  if (ctx.state === "suspended") {
  await ctx.resume();
  }
+ console.log("[live] AudioContext ready, sampleRate=" + ctx.sampleRate);
 
  const blob = new Blob([PCM_WORKLET_SOURCE], { type: "application/javascript" });
  const url = URL.createObjectURL(blob);
  await ctx.audioWorklet.addModule(url);
  URL.revokeObjectURL(url);
+ console.log("[live] worklet module loaded");
 
  const source = ctx.createMediaStreamSource(stream);
- const node = new AudioWorkletNode(ctx, "pcm-emitter", {
- // Keep the node alive even if no downstream connection is made.
- processorOptions: {},
- });
+ const node = new AudioWorkletNode(ctx, "pcm-emitter");
+ console.log("[live] AudioWorkletNode created");
  source.connect(node);
  // Important: an AudioWorkletNode whose output is not connected to
  // `ctx.destination` may be silently suspended in some browsers. We
@@ -156,18 +196,14 @@ export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle>
  node.connect(sink);
  sink.connect(ctx.destination);
 
- const samplesPerFrame = (SAMPLE_RATE_IN * CAPTURE_FRAME_MS) / 1000;
- let buffer = new Float32Array(samplesPerFrame * 4);
- let buffered = 0;
-
- node.port.onmessage = (ev: MessageEvent<{ kind: string; buffer?: Float32Array; frame?: number }>) => {
+ node.port.onmessage = (ev: MessageEvent<{ kind: string; buffer?: Float32Array; frame?: number; ctxRate?: number }>) => {
  const msg = ev.data;
  if (msg.kind === "ready") {
  console.log("[live] worklet ready");
  return;
  }
  if (msg.kind === "tick") {
- console.log(`[live] worklet frame ${msg.frame}`);
+ console.log(`[live] worklet frame ${msg.frame} ctxRate=${msg.ctxRate}`);
  return;
  }
  if (msg.kind === "speech") {
@@ -176,25 +212,9 @@ export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle>
  }
  if (msg.kind !== "pcm" || !msg.buffer) return;
 
- const chunk = msg.buffer;
- const needed = samplesPerFrame;
- if (buffered + chunk.length < needed) {
- // Grow buffer if needed.
- const grown = new Float32Array(Math.max(buffer.length * 2, buffered + chunk.length));
- grown.set(buffer.subarray(0, buffered));
- buffer = grown;
- }
- buffer.set(chunk, buffered);
- buffered += chunk.length;
-
- while (buffered >= needed) {
- const frame = buffer.subarray(0, needed);
- const int16 = floatToInt16(frame);
+ // Worklet emits fixed-size 20ms frames at 16kHz — encode and ship.
+ const int16 = floatToInt16(msg.buffer);
  cb.onFrame(int16ToBase64(int16), CAPTURE_FRAME_MS);
- // Shift remaining.
- buffer.copyWithin(0, needed, buffered);
- buffered -= needed;
- }
  };
 
  node.port.onmessageerror = () => cb.onError(new Error("worklet message error"));
