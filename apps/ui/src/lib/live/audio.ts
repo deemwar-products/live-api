@@ -72,6 +72,9 @@ class PCMEmitter extends AudioWorkletProcessor {
  constructor() {
  super();
  this.silenceFrames = 0;
+ this.frameCount = 0;
+ // Tell the main thread we're alive.
+ this.port.postMessage({ kind: "ready" });
  }
 
  process(inputs) {
@@ -79,6 +82,10 @@ class PCMEmitter extends AudioWorkletProcessor {
  if (!input || input.length === 0) return true;
  const channel = input[0];
  if (!channel) return true;
+ this.frameCount++;
+ if (this.frameCount === 1 || this.frameCount % 250 === 0) {
+ this.port.postMessage({ kind: "tick", frame: this.frameCount });
+ }
  // Copy because the underlying buffer is reused.
  const copy = new Float32Array(channel);
 
@@ -122,21 +129,47 @@ export async function startCapture(cb: CaptureCallbacks): Promise<CaptureHandle>
  });
 
  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE_IN });
+ // The AudioContext may start suspended; resume it so the worklet
+ // processes. Browsers require a user-gesture for this, but the click
+ // on "Start live session" counts.
+ if (ctx.state === "suspended") {
+ await ctx.resume();
+ }
+
  const blob = new Blob([PCM_WORKLET_SOURCE], { type: "application/javascript" });
  const url = URL.createObjectURL(blob);
  await ctx.audioWorklet.addModule(url);
  URL.revokeObjectURL(url);
 
  const source = ctx.createMediaStreamSource(stream);
- const node = new AudioWorkletNode(ctx, "pcm-emitter");
+ const node = new AudioWorkletNode(ctx, "pcm-emitter", {
+ // Keep the node alive even if no downstream connection is made.
+ processorOptions: {},
+ });
  source.connect(node);
+ // Important: an AudioWorkletNode whose output is not connected to
+ // `ctx.destination` may be silently suspended in some browsers. We
+ // wire a muted gain to keep the audio graph "live" without feeding
+ // the mic back to the speakers (which would cause a feedback loop).
+ const sink = ctx.createGain();
+ sink.gain.value = 0;
+ node.connect(sink);
+ sink.connect(ctx.destination);
 
  const samplesPerFrame = (SAMPLE_RATE_IN * CAPTURE_FRAME_MS) / 1000;
  let buffer = new Float32Array(samplesPerFrame * 4);
  let buffered = 0;
 
- node.port.onmessage = (ev: MessageEvent<{ kind: string; buffer?: Float32Array }>) => {
+ node.port.onmessage = (ev: MessageEvent<{ kind: string; buffer?: Float32Array; frame?: number }>) => {
  const msg = ev.data;
+ if (msg.kind === "ready") {
+ console.log("[live] worklet ready");
+ return;
+ }
+ if (msg.kind === "tick") {
+ console.log(`[live] worklet frame ${msg.frame}`);
+ return;
+ }
  if (msg.kind === "speech") {
  cb.onSpeechStart?.();
  return;
