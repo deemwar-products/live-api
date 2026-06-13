@@ -92,17 +92,23 @@ class PCMEmitter extends AudioWorkletProcessor {
  this.port.postMessage({ kind: "tick", frame: this.frameCount, ctxRate: sampleRate });
  }
 
- // Resample from sampleRate to 16000 by simple decimation-by-3 if
- // we are at 48000. If the context is already at 16k, this is a no-op.
+ // Resample from sampleRate to 16000. We use a 3-tap averaging
+ // decimation for the 48k -> 16k case (each output is the mean of 3
+ // input samples, which acts as a simple low-pass filter to avoid
+ // aliasing). For other rates, linear interpolation.
  const ratio = sampleRate / TARGET_RATE;
  let copy;
  if (Math.abs(ratio - 1) < 0.01) {
  copy = new Float32Array(channel);
  } else if (Math.abs(ratio - 3) < 0.05) {
- // 48k -> 16k: take every 3rd sample.
- const len = Math.floor(channel.length / ratio);
- copy = new Float32Array(len);
- for (let i = 0; i < len; i++) copy[i] = channel[Math.floor(i * ratio)];
+ // 48k -> 16k: average every 3 samples. Acts as a 3-tap box filter
+ // with cutoff around sampleRate/(2*3) ≈ 8kHz — adequate for speech.
+ const groups = Math.floor(channel.length / 3);
+ copy = new Float32Array(groups);
+ for (let g = 0; g < groups; g++) {
+ const i = g * 3;
+ copy[g] = (channel[i] + channel[i + 1] + channel[i + 2]) / 3;
+ }
  } else {
  // Generic linear interpolation fallback.
  const len = Math.floor(channel.length / ratio);
@@ -259,7 +265,12 @@ export function startPlayback(): PlaybackHandle {
  function playNext() {
  const next = queue.shift();
  if (!next) return;
+ // Resume the context on first audio to avoid autoplay restrictions.
+ if (ctx.state === 'suspended') {
+ ctx.resume().then(() => next.start());
+ } else {
  next.start();
+ }
  next.onended = () => {
  if (queue.length > 0) playNext();
  };

@@ -320,11 +320,21 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 				continue
 			}
 			if !isAudioMime(part.InlineData.MIMEType) {
+				s.log.Debug("model turn part skipped (not audio)",
+					"mime", part.InlineData.MIMEType,
+					"bytes", len(part.InlineData.Data),
+				)
 				continue
 			}
 			s.audioOutCount++
 			s.audioOutBytes += len(part.InlineData.Data)
-			if s.audioOutCount%25 == 1 {
+			if s.audioOutCount <= 3 {
+				s.log.Info("audio_out first chunk",
+					"chunks", s.audioOutCount,
+					"bytes", s.audioOutBytes,
+					"last_chunk_bytes", len(part.InlineData.Data),
+				)
+			} else if s.audioOutCount%25 == 1 {
 				s.log.Info("audio_out summary",
 					"chunks", s.audioOutCount,
 					"bytes", s.audioOutBytes,
@@ -341,6 +351,9 @@ func (s *Session) handleServerContent(ctx context.Context, c *genai.LiveServerCo
 			}); err != nil {
 				return err
 			}
+		}
+		if len(c.ModelTurn.Parts) == 0 {
+			s.log.Debug("model turn with no parts")
 		}
 	}
 	if c.Interrupted {
